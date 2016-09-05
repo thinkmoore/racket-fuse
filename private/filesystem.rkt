@@ -49,7 +49,11 @@
  filesystem-forget
  filesystem-getattr
  filesystem-opendir
- filesystem-readdir)
+ filesystem-readdir
+ filesystem-releasedir
+ filesystem-lookup
+ filesystem-open
+ filesystem-read)
 
 (struct filesystem
   (init destroy lookup forget getattr setattr readlink mknod mkdir unlink rmdir
@@ -85,33 +89,33 @@
    create getlk setlk bmap))
 
 (define (use-once/c ctc)
-  (let ([used? #f])
-    (make-contract
-     #:name (format "(use-once/c ~a)" (contract-name ctc))
-     #:first-order (lambda (v) (and (procedure? v) (contract-first-order-passes? ctc v)))
-     #:late-neg-projection
-     (lambda (blame)
-       (lambda (v neg)
-         (let ([full-blame (blame-replace-negative blame neg)])
-           (unless (procedure? v)
-             (raise-blame-error full-blame v
-                                '(expected: "~a" given: "~e")
-                                "procedure" v))
-           (impersonate-procedure
-            (((contract-late-neg-projection ctc) blame) v neg)
-            (make-keyword-procedure
-             (lambda (kwds kw-args . args)
-               (when used?
-                 (raise-blame-error (blame-swap full-blame) v
-                                    "use-once procedure invoked multiple times: ~a" v))
-               (set! used? #t)
-               (apply values kw-args args))
-             (lambda args
-               (when used?
-                 (raise-blame-error (blame-swap full-blame) v
-                                    "use-once procedure invoked multiple times: ~a" v))
-               (set! used? #t)
-               (apply values args))))))))))
+  (make-contract
+   #:name (format "(use-once/c ~a)" (contract-name ctc))
+   #:first-order (lambda (v) (and (procedure? v) (contract-first-order-passes? ctc v)))
+   #:late-neg-projection
+   (lambda (blame)
+     (lambda (v neg)
+       (let ([full-blame (blame-replace-negative blame neg)]
+             [used? #f])
+         (unless (procedure? v)
+           (raise-blame-error full-blame v
+                              '(expected: "~a" given: "~e")
+                              "procedure" v))
+         (impersonate-procedure
+          (((contract-late-neg-projection ctc) blame) v neg)
+          (make-keyword-procedure
+           (lambda (kwds kw-args . args)
+             (when used?
+               (raise-blame-error (blame-swap full-blame) v
+                                  "use-once procedure invoked multiple times: ~a" v))
+             (set! used? #t)
+             (apply values kw-args args))
+           (lambda args
+             (when used?
+               (raise-blame-error (blame-swap full-blame) v
+                                  "use-once procedure invoked multiple times: ~a" v))
+             (set! used? #t)
+             (apply values args)))))))))
 
 (define (maybe/c ctc) (or/c ctc #f))
 
@@ -125,7 +129,7 @@
 (define (default-destroy)
   (void))
 
-(define reply-entry/c (use-once/c (-> #:nodeid uint64? #:generation uint64?
+(define reply-entry/c (use-once/c (-> #:generation uint64?
                                       #:entry-valid timespec? #:attr-valid timespec?
                                       #:inode uint64? #:rdev uint32?
                                       #:size uint64? #:blocks uint64? #:atime timespec?
