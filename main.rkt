@@ -14,6 +14,7 @@
 
 (provide
  make-filesystem
+ (struct-out timespec)
  (contract-out [mount-filesystem (-> filesystem? path? (listof string?) void)]))
 
 (define-logger fuse)
@@ -39,9 +40,10 @@
     ['EINTR  (run session)] ; interrupted, retry...
     ['EAGAIN (run session)] ; try again...
     ['ENODEV (void)] ; filesystem was unmounted, quit
-    [(? fuse-header? hdr)
-     (begin
-       (dispatch hdr session)
+    [(? cpointer? buffer)
+     (let ([header  (decode-fuse_in_header buffer)]
+           [payload (skip-fuse_in_header buffer)])
+       (dispatch header payload session)
        (run session))]
     [errno
      (begin
@@ -52,214 +54,486 @@
 (define FUSE_MAJOR 7)
 (define FUSE_MINOR 22)
 
-(define (dispatch hdr session)
+(define (dispatch header payload session)
+  (define unique (fuse_in_header-unique header))
+  (define nodeid (fuse_in_header-nodeid header))
   (define (reply-error errno)
-    (send (session-channel session) (fuse-header-unique hdr) errno #f))
+    (send (session-channel session) unique errno #f))
   (define (reply-ok data [ctype #f])
-    (send (session-channel session) (fuse-header-unique hdr) #f data ctype))
+    (send (session-channel session) unique #f data ctype))
+  (define (make-reply-sized size)
+    (lambda (data)
+      (if (>= (bytes-length data) size)
+          (send (session-channel session) unique 'ERANGE #f)
+          (send (session-channel session) unique #f data))))
+  (define (make-reply-sized-list size)
+    (lambda (data)
+      (let ([buffer (malloc 'atomic size)])
+        (memset buffer 0 size)
+        (define-values (avail next)
+          (for/fold
+              ([avail size]
+               [next  buffer])
+              ([value (in-list data)]
+               #:break (not avail))
+            (let ([len (bytes-length value)])
+              (if (>= len avail)
+                  (begin
+                    (send (session-channel session) unique 'ERANGE #f)
+                    (values #f next))
+                  (begin
+                    (memcpy next value len)
+                    (values (- avail (add1 len))))))))
+        (when avail
+          (send (session-channel session) unique #f buffer (- size avail))))))
   (define (reply-empty)
     (reply-ok #f))
   (define (reply-attr #:attr-valid valid #:inode inode #:rdev rdev
                       #:size size #:blocks blocks #:atime atime
                       #:mtime mtime #:ctime ctime #:kind kind
                       #:perm perm #:nlink nlink #:uid uid #:gid gid)
-    (let ([data (make-fuse_attr_out (timespec-sec valid)
-                                    (timespec-nsec valid)
-                                    0
-                                    inode
-                                    size
-                                    blocks
-                                    (timespec-sec atime)
-                                    (timespec-sec mtime)
-                                    (timespec-sec ctime)
-                                    (timespec-nsec atime)
-                                    (timespec-nsec mtime)
-                                    (timespec-nsec ctime)
-                                    (or-flags kind perm)
-                                    nlink
-                                    uid
-                                    gid
-                                    rdev
-                                    0
-                                    0)])
-      (send (session-channel session) (fuse-header-unique hdr) #f data _fuse_attr_out)))
+    (let ([data (fuse_attr_out (timespec-sec valid)
+                               (timespec-nsec valid)
+                               0
+                               inode
+                               size
+                               blocks
+                               (timespec-sec atime)
+                               (timespec-sec mtime)
+                               (timespec-sec ctime)
+                               (timespec-nsec atime)
+                               (timespec-nsec mtime)
+                               (timespec-nsec ctime)
+                               (or-flags kind perm)
+                               nlink
+                               uid
+                               gid
+                               rdev
+                               0
+                               0)])
+      (send (session-channel session) unique #f data _fuse_attr_out)))
   (define (reply-entry #:entry-valid ent-valid #:attr-valid attr-valid
                        #:generation generation #:inode inode #:rdev rdev
                        #:size size #:blocks blocks #:atime atime
                        #:mtime mtime #:ctime ctime #:kind kind
                        #:perm perm #:nlink nlink #:uid uid #:gid gid)
-    (let ([data (make-fuse_entry_out inode
-                                     generation
-                                     (timespec-sec ent-valid)
-                                     (timespec-sec attr-valid)
-                                     (timespec-nsec ent-valid)
-                                     (timespec-nsec attr-valid)
-                                     inode
-                                     size
-                                     blocks
-                                     (timespec-sec atime)
-                                     (timespec-sec mtime)
-                                     (timespec-sec ctime)
-                                     (timespec-nsec atime)
-                                     (timespec-nsec mtime)
-                                     (timespec-nsec ctime)
-                                     (or-flags kind perm)
-                                     nlink
-                                     uid
-                                     gid
-                                     rdev
-                                     0
-                                     0)])
-      (send (session-channel session) (fuse-header-unique hdr) #f data _fuse_entry_out)))
+    (let ([data (fuse_entry_out inode
+                                generation
+                                (timespec-sec ent-valid)
+                                (timespec-sec attr-valid)
+                                (timespec-nsec ent-valid)
+                                (timespec-nsec attr-valid)
+                                inode
+                                size
+                                blocks
+                                (timespec-sec atime)
+                                (timespec-sec mtime)
+                                (timespec-sec ctime)
+                                (timespec-nsec atime)
+                                (timespec-nsec mtime)
+                                (timespec-nsec ctime)
+                                (or-flags kind perm)
+                                nlink
+                                uid
+                                gid
+                                rdev
+                                0
+                                0)])
+      (send (session-channel session) unique #f data _fuse_entry_out)))
   (define (reply-open #:info info #:flags flags)
-    (let ([data (make-fuse_open_out info flags 0)])
-      (send (session-channel session) (fuse-header-unique hdr) #f data _fuse_open_out)))
-  (log-fuse-info "handling ~a" (fuse-header-opcode hdr))
-  (match (fuse-header-opcode hdr)
-    ['FUSE_INIT
-     (let* ([init  (filesystem-init (session-filesystem session))]
-            [in    (decode-payload hdr _fuse_init_in)]
-            [major (fuse_init_in-major in)]
-            [minor (fuse_init_in-minor in)]
-            [max_readahead (fuse_init_in-max_readahead in)]
-            [flags (ptr-ref (ptr-add in fuse_init_in-max_readahead-offset) _fuse_flags)]
-            [legacy-init (and (>= major 7) (< minor 23))])
-       (when (or (< major 7) (and (= major 7) (< minor 6)))
-         (reply-error 'EPROTO)
-         (log-fuse-error "Unsupported FUSE ABI version ~a.~a" major minor)
-         (raise-user-error "Unsupported FUSE ABI version ~a.~a" major minor))
-       (log-fuse-info "FUSE ABI version ~a.~a" major minor)
-       (match (init)
-         [#t
-          (let ([init_out (if legacy-init
-                              (make-fuse_init_out_old
-                               FUSE_MAJOR
-                               FUSE_MINOR
-                               max_readahead
-                               (filter (lambda (f) (member f '(FUSE_ASYNC_READ FUSE_EXPORT_SUPPORT FUSE_BIG_WRITES))) flags)
-                               0
-                               0
-                               MAX_WRITE_SIZE)
-                              (make-fuse_init_out
-                               FUSE_MAJOR
-                               FUSE_MINOR
-                               max_readahead
-                               (filter (lambda (f) (member f '(FUSE_ASYNC_READ FUSE_EXPORT_SUPPORT FUSE_BIG_WRITES))) flags)
-                               0
-                               0
-                               MAX_WRITE_SIZE
-                               0
-                               unused-init-array))])
-            (set-session-initialized! session #t)
-            (reply-ok init_out (if legacy-init _fuse_init_out_old _fuse_init_out)))]
-         [errno
-          (reply-error errno)]))]
-    [(? (lambda (op) (not (session-initialized session))) op)
-     (reply-error 'EIO)]
-    ['FUSE_DESTROY
-     (let* ([destroy (filesystem-destroy (session-filesystem session))])
-       (destroy)
-       (set-session-destroyed! session #t)
-       (reply-empty))]
-    [(? (lambda (op) (session-destroyed session)) op)
-     (reply-error 'EIO)]
-    ['FUSE_FORGET
-     (let* ([forget  (filesystem-forget (session-filesystem session))]
-            [nodeid  (fuse-header-nodeid hdr)]
-            [nlookup (ptr-ref (fuse-header-payload hdr) _uint64)])
-       (forget #:nodeid nodeid #:nlookup nlookup))]
-    ['FUSE_GETATTR
-     (let* ([getattr (filesystem-getattr (session-filesystem session))]
-            [nodeid  (fuse-header-nodeid hdr)]
-            [info    #f])
-       (getattr #:nodeid nodeid #:info info #:reply reply-attr #:error reply-error))]
-    ['FUSE_OPENDIR
-     (let* ([opendir (filesystem-opendir (session-filesystem session))]
-            [nodeid  (fuse-header-nodeid hdr)]
-            [flags   (ptr-ref (fuse-header-payload hdr) _flag_t)])
-       (opendir #:nodeid nodeid #:flags flags #:reply reply-open #:error reply-error))]
-    ['FUSE_READDIR
-     (let* ([readdir (filesystem-readdir (session-filesystem session))]
-            [nodeid  (fuse-header-nodeid hdr)]
-            [in      (decode-payload hdr _fuse_read_in)]
-            [info    (ptr-ref in _racket)]
-            [offset  (fuse_read_in-offset in)]
-            [size    (fuse_read_in-size   in)]
-            [buffer  (malloc 'atomic size)]
-            [used    0]
-            [add     (lambda (#:inode inode #:offset offset #:kind kind #:name name)
-                       (let* ([name    (path->bytes name)]
-                              [namelen (bytes-length name)]
-                              [entlen  (+ (ctype-sizeof _fuse_dirent) namelen)]
-                              [rem     (remainder entlen (ctype-sizeof _uint64))]
-                              [entsize (if (= 0 rem) entlen (+ (- entlen rem) (ctype-sizeof _uint64)))]
-                              [padlen  (- entsize entlen)])
-                         (if (> (+ used entsize) size)
-                             #f
-                             (let* ([header  (ptr-add buffer used)]
-                                    [data    (ptr-add header (ctype-sizeof _fuse_dirent))]
-                                    [padding (ptr-add data namelen)])
-                               (ptr-set! header _fuse_dirent (make-fuse_dirent inode offset namelen kind))
-                               (memcpy data name namelen)
-                               (memset padding 0 padlen)
-                               (set! used (+ used entsize))
-                               #t))))]
-            [done    (lambda ()
-                       (send (session-channel session) (fuse-header-unique hdr) #f buffer used))])
-       (readdir #:nodeid nodeid #:info info #:offset offset #:add add #:reply done #:error reply-error))]
-    ['FUSE_RELEASEDIR
-     (let* ([releasedir (filesystem-releasedir (session-filesystem session))]
-            [nodeid     (fuse-header-nodeid hdr)]
-            [in         (decode-payload hdr _fuse_release_in)]
-            [info       (ptr-ref in _racket)]
-            [flags      (ptr-ref (ptr-add in fuse_release_in-flags-offset) _fuse_flags)])
-       (releasedir #:nodeid nodeid #:info info #:flags flags #:reply reply-empty #:error reply-error))]
-    ['FUSE_LOOKUP
-     (let* ([lookup     (filesystem-lookup (session-filesystem session))]
-            [nodeid     (fuse-header-nodeid hdr)]
-            [name       (bytes->path-element (cast (fuse-header-payload hdr) _pointer _bytes))])
-       (log-fuse-info "lookup ~a -> ~a" nodeid name)
-       (lookup #:nodeid nodeid #:name name #:reply reply-entry #:error reply-error))]
-    ['FUSE_OPEN
-     (let* ([open       (filesystem-open (session-filesystem session))]
-            [nodeid     (fuse-header-nodeid hdr)]
-            [flags      (decode-payload hdr _flag_t)])
-       (open #:nodeid nodeid #:flags flags #:reply reply-open #:error reply-error))]
-    ['FUSE_READ
-     (let* ([read       (filesystem-read (session-filesystem session))]
-            [nodeid     (fuse-header-nodeid hdr)]
-            [in         (decode-payload hdr _fuse_read_in)]
-            [info       (ptr-ref in _racket)]
-            [offset     (fuse_read_in-offset in)]
-            [size       (fuse_read_in-size   in)])
-       (read #:nodeid nodeid #:info info #:offset offset #:size size #:reply reply-ok #:error reply-error))]
-    [op (reply-error 'ENOSYS)]
-    ['FUSE_SETATTR '()]
-    ['FUSE_READLINK '()]
-    ['FUSE_SYMLINK '()]
-    ['FUSE_MKNOD '()]
-    ['FUSE_MKDIR '()]
-    ['FUSE_UNLINK '()]
-    ['FUSE_RMDIR '()]
-    ['FUSE_RENAME '()]
-    ['FUSE_LINK '()]
-    ['FUSE_WRITE '()]
-    ['FUSE_STATFS '()]
-    ['FUSE_RELEASE '()]
-    ['FUSE_FSYNC '()]
-    ['FUSE_SETXATTR '()]
-    ['FUSE_GETXATTR '()]
-    ['FUSE_LISTXATTR '()]
-    ['FUSE_REMOVEXATTR '()]
-    ['FUSE_FLUSH '()]
-    ['FUSE_FSYNCDIR '()]
-    ['FUSE_GETLK '()]
-    ['FUSE_SETLK '()]
-    ['FUSE_SETLKW '()]
-    ['FUSE_ACCESS '()]
-    ['FUSE_CREATE '()]
-    ['FUSE_INTERRUPT '()]
-    ['FUSE_BMAP '()]))
+    (let ([data (fuse_open_out info flags 0)])
+      (send (session-channel session) unique #f data _fuse_open_out)))
+  (define (reply-write #:written written)
+    (let ([data (fuse_write_out written 0)])
+      (send (session-channel session) unique #f data _fuse_write_out)))
+  (define (reply-create #:entry-valid ent-valid #:attr-valid attr-valid
+                        #:generation generation #:inode inode #:rdev rdev
+                        #:size size #:blocks blocks #:atime atime
+                        #:mtime mtime #:ctime ctime #:kind kind
+                        #:perm perm #:nlink nlink #:uid uid #:gid gid
+                        #:info info #:flags flags)
+    (let ([size   (+ (ctype-sizeof _fuse_entry_out) (ctype-sizeof _fuse_open_out))]
+          [buffer (malloc 'atomic size)]
+          [entry  (fuse_entry_out inode
+                                  generation
+                                  (timespec-sec ent-valid)
+                                  (timespec-sec attr-valid)
+                                  (timespec-nsec ent-valid)
+                                  (timespec-nsec attr-valid)
+                                  inode
+                                  size
+                                  blocks
+                                  (timespec-sec atime)
+                                  (timespec-sec mtime)
+                                  (timespec-sec ctime)
+                                  (timespec-nsec atime)
+                                  (timespec-nsec mtime)
+                                  (timespec-nsec ctime)
+                                  (or-flags kind perm)
+                                  nlink
+                                  uid
+                                  gid
+                                  rdev
+                                  0
+                                  0)]
+          [open   (fuse_open_out info flags 0)])
+      (ptr-set! buffer _fuse_entry_out entry)
+      (ptr-set! buffer _fuse_open_out open)
+      (send (session-channel session) unique #f buffer size)))
+  (define (reply-statfs #:blocks blocks #:bfree bfree #:bavail bavail #:files files
+                        #:ffree ffree #:bsize bsize #:namelen namelen #:frsize frsize)
+    (let ([data (fuse_statfs_out blocks
+                                 bfree
+                                 bavail
+                                 files
+                                 ffree
+                                 bsize
+                                 namelen
+                                 frsize)])
+      (send (session-channel session) unique #f data _fuse_statfs_out)))
+  (parameterize ([request-pid (fuse_in_header-pid header)]
+                 [request-uid (fuse_in_header-uid header)]
+                 [request-gid (fuse_in_header-gid header)])
+    (match (fuse_in_header-opcode header)
+      ['FUSE_INIT
+       (let* ([init  (filesystem-init (session-filesystem session))]
+              [in    (decode-fuse_init_in payload)]
+              [major (fuse_init_in-major in)]
+              [minor (fuse_init_in-minor in)]
+              [max_readahead (fuse_init_in-max_readahead in)]
+              [flags (fuse_init_in-flags in)]
+              [legacy-init (and (>= major 7) (< minor 23))])
+         (log-fuse-debug "FUSE_INIT major: ~a minor: ~a flags: ~a" major minor flags)
+         (when (or (< major 7) (and (= major 7) (< minor 6)))
+           (reply-error 'EPROTO)
+           (log-fuse-error "Unsupported FUSE ABI version ~a.~a" major minor)
+           (raise-user-error "Unsupported FUSE ABI version ~a.~a" major minor))
+         (log-fuse-info "FUSE ABI version ~a.~a" major minor)
+         (match (init)
+           [#t
+            (let ([init_out (if legacy-init
+                                (fuse_init_out_old
+                                 FUSE_MAJOR
+                                 FUSE_MINOR
+                                 max_readahead
+                                 (filter (lambda (f) (member f '(FUSE_ASYNC_READ FUSE_EXPORT_SUPPORT FUSE_BIG_WRITES))) flags)
+                                 0
+                                 0
+                                 MAX_WRITE_SIZE)
+                                (fuse_init_out
+                                 FUSE_MAJOR
+                                 FUSE_MINOR
+                                 max_readahead
+                                 (filter (lambda (f) (member f '(FUSE_ASYNC_READ FUSE_EXPORT_SUPPORT FUSE_BIG_WRITES))) flags)
+                                 0
+                                 0
+                                 MAX_WRITE_SIZE
+                                 0
+                                 (let* ([_unused_array (_array _uint32 9)]
+                                        [buffer (malloc 'atomic _unused_array)])
+                                   (ptr-ref buffer _unused_array))))])
+              (set-session-initialized! session #t)
+              (reply-ok init_out (if legacy-init _fuse_init_out_old _fuse_init_out)))]
+           [errno
+            (reply-error errno)]))]
+      [(? (lambda (op) (not (session-initialized session))) op)
+       (log-fuse-error "Operation ~a received for uninitialized session" op)
+       (reply-error 'EIO)]
+      ['FUSE_DESTROY
+       (let* ([destroy (filesystem-destroy (session-filesystem session))])
+         (log-fuse-info "FUSE_DESTROY")
+         (destroy)
+         (set-session-destroyed! session #t)
+         (reply-empty))]
+      [(? (lambda (op) (session-destroyed session)) op)
+       (log-fuse-error "Operation ~a received for destroyed session" op)
+       (reply-error 'EIO)]
+      ['FUSE_FORGET
+       (let* ([forget  (filesystem-forget (session-filesystem session))]
+              [in      (decode-fuse_forget_in payload)]
+              [nlookup (fuse_forget_in-nlookup in)])
+         (log-fuse-info "FUSE_FORGET nodeid: ~a nlookup: ~a" nodeid nlookup)
+         (forget #:nodeid nodeid #:nlookup nlookup))]
+      ['FUSE_GETATTR
+       (let* ([getattr (filesystem-getattr (session-filesystem session))]
+              [in      (decode-fuse_getattr_in payload)]
+              [flags   (fuse_getattr_in-flags in)]
+              [info    (if (eq? flags 'FUSE_GETATTR_FH) (fuse_getattr_in-user in) #f)])
+         (log-fuse-info "FUSE_GETATTR nodeid: ~a flags: ~a" nodeid flags)
+         (getattr #:nodeid nodeid #:info info #:reply reply-attr #:error reply-error))]
+      ['FUSE_OPENDIR
+       (let* ([opendir (filesystem-opendir (session-filesystem session))]
+              [in      (decode-fuse_open_in payload)]
+              [flags   (fuse_open_in-flags in)])
+         (log-fuse-info "FUSE_OPENDIR nodeid: ~a flags: ~a" nodeid flags)
+         (opendir #:nodeid nodeid #:flags flags #:reply reply-open #:error reply-error))]
+      ['FUSE_READDIR
+       (let* ([readdir (filesystem-readdir (session-filesystem session))]
+              [in      (decode-fuse_read_in payload)]
+              [info    (fuse_read_in-user in)]
+              [offset  (fuse_read_in-offset in)]
+              [size    (fuse_read_in-size in)]
+              [buffer  (malloc 'atomic size)]
+              [used    0]
+              [add     (lambda (#:inode inode #:offset offset #:kind kind #:name name)
+                         (let* ([name    (path->bytes name)]
+                                [namelen (bytes-length name)]
+                                [entlen  (+ (ctype-sizeof _fuse_dirent) namelen)]
+                                [rem     (remainder entlen (ctype-sizeof _uint64))]
+                                [entsize (if (= 0 rem) entlen (+ (- entlen rem) (ctype-sizeof _uint64)))]
+                                [padlen  (- entsize entlen)])
+                           (if (> (+ used entsize) size)
+                               #f
+                               (let* ([header  (ptr-add buffer used)]
+                                      [data    (ptr-add header (ctype-sizeof _fuse_dirent))]
+                                      [padding (ptr-add data namelen)])
+                                 (ptr-set! header _fuse_dirent 0 (fuse_dirent inode offset namelen kind))
+                                 (memcpy data name namelen)
+                                 (memset padding 0 padlen)
+                                 (set! used (+ used entsize))
+                                 #t))))]
+              [done    (lambda ()
+                         (send (session-channel session) unique #f buffer used))])
+         (log-fuse-info "FUSE_READDIR nodeid: ~a offset: ~a" nodeid offset)
+         (readdir #:nodeid nodeid #:info info #:offset offset #:add add #:reply done #:error reply-error))]
+      ['FUSE_RELEASEDIR
+       (let* ([releasedir    (filesystem-releasedir (session-filesystem session))]
+              [in            (decode-fuse_release_in payload)]
+              [info          (fuse_release_in-user in)]
+              [flags         (fuse_release_in-flags in)]
+              [release-flags (fuse_release_in-rflags in)]
+              [lockowner     (fuse_release_in-lckowner in)])
+         (log-fuse-info "FUSE_RELEASEDIR nodeid: ~a flags: ~a" nodeid flags)
+         (releasedir #:nodeid nodeid #:info info #:flags flags #:reply reply-empty #:error reply-error))]
+      ['FUSE_LOOKUP
+       (let* ([lookup     (filesystem-lookup (session-filesystem session))]
+              [name       (bytes->path-element (cast payload _pointer _bytes))])
+         (log-fuse-info "FUSE_LOOKUP nodeid: ~a name: ~a" nodeid name)
+         (lookup #:nodeid nodeid #:name name #:reply reply-entry #:error reply-error))]
+      ['FUSE_OPEN
+       (let* ([open       (filesystem-open (session-filesystem session))]
+              [in         (decode-fuse_open_in payload)]
+              [flags      (fuse_open_in-flags in)])
+         (log-fuse-info "FUSE_OPEN nodeid: ~a flags: ~a" nodeid flags)
+         (open #:nodeid nodeid #:flags flags #:reply reply-open #:error reply-error))]
+      ['FUSE_READ
+       (let* ([read       (filesystem-read (session-filesystem session))]
+              [in         (decode-fuse_read_in payload)]
+              [info       (fuse_read_in-user in)]
+              [offset     (fuse_read_in-offset in)]
+              [size       (fuse_read_in-size in)]
+              [flags      (fuse_read_in-flags in)]
+              [lockowner  (and (check-flag (fuse_read_in-rflags in) (fuse_read_in-lckown in)))])
+         (log-fuse-info "FUSE_READ nodeid: ~a offset: ~a size: ~a flags: ~a lockowner: ~a" nodeid offset size flags lockowner)
+         (read #:nodeid nodeid #:info info #:offset offset #:size size #:flags flags #:lockowner lockowner
+               #:reply reply-ok #:error reply-error))]
+      ['FUSE_SETATTR ;XXX Should handle FATTR_FH and FATTR_LOCKOWNER
+       (let* ([setattr    (filesystem-setattr (session-filesystem session))]
+              [in         (decode-fuse_setattr_in payload)]
+              [info       (fuse_setattr_in-user in)]
+              [valid      (fuse_setattr_in-valid in)]
+              [mode       (and (check-flag valid 'FATTR_MODE)
+                               (fuse_setattr_in-mode in))]
+              [uid        (and (check-flag valid 'FATTR_UID)
+                               (fuse_setattr_in-uid in))]
+              [gid        (and (check-flag valid 'FATTR_GID)
+                               (fuse_setattr_in-gid in))]
+              [size       (and (check-flag valid 'FATTR_SIZE)
+                               (fuse_setattr_in-size in))]
+              [atime      (or (and (check-flag valid 'FATTR_ATIME) (timespec (fuse_setattr_in-atime in) (fuse_setattr_in-atimensec in)))
+                              (and (check-flag valid 'FATTR_ATIME_NOW) (timespec-now)))]
+              [mtime      (or (and (check-flag valid 'FATTR_MTIME) (timespec (fuse_setattr_in-mtime in) (fuse_setattr_in-mtimensec in)))
+                              (and (check-flag valid 'FATTR_MTIME_NOW) (timespec-now)))]
+              [ctime      (and (check-flag valid 'FATTR_CTIME) (timespec (fuse_setattr_in-ctime in) (fuse_setattr_in-ctimensec in)))])
+         (log-fuse-info "FUSE_SETATTR nodeid: ~a mode: ~a uid: ~a gid: ~a size: ~a atime: ~a mtime: ~a ctime: ~a"
+                        nodeid mode uid gid size atime mtime ctime)
+         (if (or (check-flag valid 'FATTR_FH) (check-flag valid 'FATTR_LOCKOWNER))
+             (reply-error 'ENOSYS)
+             (setattr #:nodeid nodeid #:info info #:mode mode #:uid uid #:gid gid #:size size
+                      #:atime atime #:mtime mtime #:ctime ctime #:reply reply-attr #:error reply-error)))]
+      ['FUSE_READLINK
+       (let* ([readlink   (filesystem-readlink (session-filesystem session))])
+         (log-fuse-info "FUSE_READLINK nodeid: ~a" nodeid)
+         (readlink #:nodeid nodeid #:reply reply-ok #:error reply-error))]
+      ['FUSE_SYMLINK
+       (let* ([symlink    (filesystem-symlink (session-filesystem session))]
+              [name-bytes (cast payload _pointer _bytes)]
+              [name-len   (bytes-length name-bytes)]
+              [name       (bytes->path-element name-bytes)]
+              [link       (bytes->path-element (cast (ptr-add payload (+ name-len 1)) _pointer _bytes))])
+         (log-fuse-info "FUSE_SYMLINK nodeid: ~a name: ~a link: ~a" nodeid name link)
+         (symlink #:nodeid nodeid #:name name #:link link #:reply reply-entry #:error reply-error))]
+      ['FUSE_MKNOD
+       (let* ([mknod      (filesystem-mknod (session-filesystem session))]
+              [in         (decode-fuse_mknod_in payload)]
+              [name       (bytes->path-element (cast (skip-fuse_mknod_in payload) _pointer _bytes))]
+              [modeinfo   (fuse_mknod_in-mode in)]
+              [kind       (filter filetype? modeinfo)]
+              [mode       (filter perm? modeinfo)]
+              [umask      (fuse_mknod_in-umask in)]
+              [rdev       (fuse_mknod_in-rdev in)])
+         (log-fuse-info "FUSE_MKNOD nodeid: ~a name: ~a kind: ~a mode: ~a umask: ~a rdev: ~a" nodeid name kind mode umask rdev)
+         (mknod #:nodeid nodeid #:name name #:kind kind #:mode mode #:umask umask #:rdev rdev
+                #:reply reply-entry #:error reply-error))]
+      ['FUSE_MKDIR
+       (let* ([mkdir      (filesystem-mkdir (session-filesystem session))]
+              [in         (decode-fuse_mkdir_in payload)]
+              [mode       (fuse_mkdir_in-mode in)]
+              [umask      (fuse_mkdir_in-umask in)]
+              [name       (bytes->path-element (cast (skip-fuse_mkdir_in payload) _pointer _bytes))])
+         (log-fuse-info "FUSE_MKDIR nodeid: ~a name: ~a mode: ~a umask: ~a" nodeid name mode umask)
+         (mkdir #:nodeid nodeid #:name name #:mode mode #:umask umask #:reply reply-entry #:error reply-error))]
+      ['FUSE_UNLINK
+       (let* ([unlink     (filesystem-unlink (session-filesystem session))]
+              [name       (bytes->path-element (cast payload _pointer _bytes))])
+         (log-fuse-info "FUSE_UNLINK nodeid: ~a name: ~a" nodeid name)
+         (unlink #:nodeid nodeid #:name name #:reply reply-empty #:error reply-error))]
+      ['FUSE_RMDIR
+       (let* ([rmdir      (filesystem-rmdir (session-filesystem session))]
+              [name       (bytes->path-element (cast payload _pointer _bytes))])
+         (log-fuse-info "FUSE_RMDIR nodeid: ~a name: ~a" nodeid name)
+         (rmdir #:nodeid nodeid #:name name #:reply reply-empty #:error reply-error))]
+      ['FUSE_RENAME
+       (let* ([rename      (filesystem-rename (session-filesystem session))]
+              [in          (decode-fuse_rename_in payload)]
+              [newnodeid   (fuse_rename_in-newdir in)]
+              [name-ptr    (skip-fuse_rename_in payload)]
+              [name-bytes  (cast name-ptr _pointer _bytes)]
+              [name-len    (bytes-length name-bytes)]
+              [name        (bytes->path-element name-bytes)]
+              [newname-ptr (ptr-add name-ptr (+ 1 name-len))]
+              [newname     (bytes->path-element (cast newname-ptr _pointer _bytes))])
+         (log-fuse-info "FUSE_RENAME nodeid: ~a name: ~a newnodeid: ~a newname: ~a" nodeid name newnodeid newname)
+         (rename #:nodeid nodeid #:name name #:newnodeid newnodeid #:newname newname #:reply reply-empty #:error reply-error))]
+      ['FUSE_LINK
+       (let* ([link        (filesystem-link (session-filesystem session))]
+              [in          (decode-fuse_link_in payload)]
+              [oldnodeid   (fuse_link_in-oldnodeid in)]
+              [newname-ptr (skip-fuse_link_in payload)]
+              [newname     (bytes->path-element (cast newname-ptr _pointer _bytes))])
+         (log-fuse-info "FUSE_LINK nodeid: ~a oldnodeid: ~a newname: ~a" nodeid oldnodeid newname)
+         (link #:nodeid nodeid #:oldnodeid oldnodeid #:newname newname #:reply reply-entry #:error reply-error))]
+      ['FUSE_WRITE ;XXX Should handle FUSE_WRITE_CACHE
+       (let* ([write      (filesystem-write (session-filesystem session))]
+              [in         (decode-fuse_write_in payload)]
+              [info       (fuse_write_in-user in)]
+              [offset     (fuse_write_in-offset in)]
+              [size       (fuse_write_in-size in)]
+              [flags      (fuse_write_in-flags in)]
+              [wflags     (fuse_write_in-wflags in)]
+              [lockowner  (and (check-flag wflags 'FUSE_WRITE_LOCKOWNER) (fuse_write_in-lckowner in))]
+              [data       (make-bytes size)])
+         (memcpy data (skip-fuse_write_in payload) size)
+         (log-fuse-info "FUSE_WRITE nodeid: ~a offset: ~a data: ~a flags: ~a lockowner: ~a"
+                         nodeid offset data flags lockowner)
+         (if (check-flag wflags 'FUSE_WRITE_CACHE)
+             (reply-error 'ENOSYS)
+             (write #:nodeid nodeid #:info info #:offset offset #:data data #:flags flags #:lockowner lockowner
+                    #:reply reply-write #:error reply-error)))]
+      ['FUSE_RELEASE
+       (let* ([release    (filesystem-release (session-filesystem session))]
+              [in         (decode-fuse_release_in payload)]
+              [info       (fuse_release_in-user in)]
+              [flags      (fuse_release_in-flags in)]
+              [rflags     (fuse_release_in-rflags in)]
+              [flush?     (check-flag rflags 'FUSE_RELEASE_FLUSH)]
+              [unlock?    (check-flag rflags 'FUSE_RELEASE_FLOCK_UNLOCK)]
+              [lockowner  (fuse_release_in-lckowner in)])
+         (log-fuse-info "FUSE_RELEASE nodeid: ~a flags: ~a lockowner: ~a flush: ~a unlock ~a"
+                         nodeid flags lockowner flush? unlock?)
+         (release #:nodeid nodeid #:info info #:flags flags #:lockowner lockowner #:flush flush? #:unlock unlock?
+                  #:reply reply-empty #:error reply-error))]
+      ['FUSE_FSYNC
+       (let* ([fsync      (filesystem-fsync (session-filesystem session))]
+              [in         (decode-fuse_fsync_in payload)]
+              [info       (fuse_fsync_in-user in)]
+              [flags      (fuse_fsync_in-flags in)]
+              [sync?      (check-flag flags 'DATASYNC)])
+         (log-fuse-info "FUSE_FSYNC nodeid: ~a syncdataonly: ~a" nodeid sync?)
+         (fsync #:nodeid nodeid #:info info #:syncdataonly sync? #:reply reply-empty #:error reply-error))]
+      ['FUSE_FLUSH
+       (let* ([flush      (filesystem-flush (session-filesystem session))]
+              [in         (decode-fuse_flush_in payload)]
+              [info       (fuse_flush_in-user in)]
+              [lockowner  (fuse_flush_in-lckowner in)])
+         (log-fuse-info "FUSE_FLUSH nodeid: ~a lockowner: ~a" info lockowner)
+         (flush #:nodeid nodeid #:info info #:lockowner lockowner #:reply reply-empty #:error reply-error))]
+      ['FUSE_FSYNCDIR
+       (let* ([fsyncdir   (filesystem-fsyncdir (session-filesystem session))]
+              [in         (decode-fuse_fsync_in payload)]
+              [info       (fuse_fsync_in-user in)]
+              [flags      (fuse_fsync_in-flags in)]
+              [sync?      (check-flag flags 'DATASYNC)])
+         (log-fuse-info "FUSE_FSYNCDIR nodeid: ~a syncdataonly: ~a" nodeid sync?)
+         (fsyncdir #:nodeid nodeid #:info info #:syncdataonly sync? #:reply reply-empty #:error reply-error))]
+      ['FUSE_ACCESS
+       (let* ([access     (filesystem-access (session-filesystem session))]
+              [in         (decode-fuse_access_in payload)]
+              [mask       (fuse_access_in-mask in)])
+         (log-fuse-info "FUSE_ACCESS nodeid: ~a mask: ~a" nodeid mask)
+         (access #:nodeid nodeid #:mask mask #:reply reply-empty #:error reply-error))]
+      ['FUSE_CREATE
+       (let* ([create     (filesystem-create (session-filesystem session))]
+              [in         (decode-fuse_create_in payload)]
+              [flags      (fuse_create_in-flags in)]
+              [mode       (fuse_create_in-mode in)]
+              [umask      (fuse_create_in-umask in)]
+              [name-ptr   (skip-fuse_create_in payload)]
+              [name       (bytes->path-element (cast name-ptr _pointer _bytes))])
+         (log-fuse-info "FUSE_CREATE nodeid: ~a name: ~a flags: ~a mode: ~a umask: ~a"
+                        nodeid name flags mode umask)
+         (create #:nodeid nodeid #:name name #:mode mode #:umask umask #:flags flags
+                 #:reply reply-create #:error reply-error))]
+      ['FUSE_STATFS
+       (let* ([statfs     (filesystem-statfs (session-filesystem session))])
+         (log-fuse-info "FUSE_STATFS nodeid: ~a" nodeid)
+         (statfs #:nodeid nodeid #:reply reply-statfs #:error reply-error))]
+      ['FUSE_SETXATTR
+       (let* ([setxattr   (filesystem-setxattr (session-filesystem session))]
+              [in         (decode-fuse_setxattr_in payload)]
+              [size       (fuse_setxattr_in-size in)]
+              [op         (fuse_setxattr_in-op in)]
+              [name-ptr   (skip-fuse_setxattr_in payload)]
+              [name-bytes (cast name-ptr _pointer _bytes)]
+              [name-len   (bytes-length name-bytes)]
+              [name       (bytes->string/locale name-bytes)]
+              [value-ptr  (ptr-add name-ptr (+ name-len 1))]
+              [value      (bytes->string/locale (cast value-ptr _pointer _bytes))])
+         (log-fuse-info "FUSE_SETXATTR nodeid: ~a name: ~a value: ~a op: ~a size: ~a")
+         (setxattr #:nodeid nodeid #:name name #:value value #:op op #:size size
+                   #:reply reply-empty #:error reply-error))]
+      ['FUSE_GETXATTR
+       (let* ([getxattr   (filesystem-getxattr (session-filesystem session))]
+              [in         (decode-fuse_getxattr_in payload)]
+              [size       (fuse_getxattr_in-size in)]
+              [name-ptr   (skip_fuse_getxattr_in payload)]
+              [name       (bytes->string/locale (cast name-ptr _pointer _bytes))])
+         (log-fuse-info "FUSE_GETXATTR nodeid: ~a name: ~a size: ~a" nodeid name size)
+         (getxattr #:nodeid nodeid #:name name #:reply (make-reply-sized size) #:error reply-error))]
+      ['FUSE_LISTXATTR
+       (let* ([listxattr  (filesystem-listxattr (session-filesystem session))]
+              [in         (decode-fuse_getxattr_in payload)]
+              [size       (fuse_getxattr_in-size in)])
+         (log-fuse-info "FUSE_LISTXATTR nodeid: ~a size: ~a" nodeid size)
+         (listxattr #:nodeid nodeid #:name name #:reply (make-reply-sized-list size) #:error reply-error))]
+      ['FUSE_REMOVEXATTR
+       (let* ([removexattr (filesystem-removexattr (session-filesystem session))]
+              [name        (bytes->string/locale (cast payload _pointer _bytes))])
+         (log-fuse-info "FUSE_REMOVEXATTR nodeid: ~a name: ~a" nodeid name)
+         (removexattr #:nodeid nodeid #:name name #:reply reply-empty #:error reply-error))]
+      ['FUSE_GETLK (reply-error 'ENOSYS)]
+      ['FUSE_SETLK (reply-error 'ENOSYS)]
+      ['FUSE_SETLKW (reply-error 'ENOSYS)]
+      ['FUSE_INTERRUPT (reply-error 'ENOSYS)]
+      ['FUSE_BMAP (reply-error 'ENOSYS)]
+      ['FUSE_IOCTL (reply-error 'ENOSYS)]
+      ['FUSE_POLL (reply-error 'ENOSYS)]
+      ['FUSE_NOTIFY_REPLY (reply-error 'ENOSYS)]
+      ['FUSE_BATCH_FORGET (reply-error 'ENOSYS)]
+      ['FUSE_FALLOCATE (reply-error 'ENOSYS)]
+      ['FUSE_READDIRPLUS (reply-error 'ENOSYS)]
+      ['FUSE_RENAME2 (reply-error 'ENOSYS)]
+      [op (reply-error 'ENOSYS)])))
 
 (define libfuse (ffi-lib "libfuse"))
 (define libc (ffi-lib #f))
@@ -270,6 +544,7 @@
    [argv      (_list i _string)]
    [allocated _int]))
 
+;XXX Remove dependency on libfuse?
 (define fuse_mount_compat25
   (get-ffi-obj "fuse_mount_compat25" libfuse
                (_fun #:save-errno 'posix _path _fuse_args-pointer _-> _int)))
@@ -285,7 +560,8 @@
 (struct channel (fd path))
 
 (define (make-channel mountpoint options)
-  (let* ([real-path (resolve-path mountpoint)]
+  (let* ([options (cons "default_permissions" options)]
+         [real-path (resolve-path mountpoint)]
          [args (make-fuse_args (length options) options 0)]
          [ret (fuse_mount_compat25 real-path args)])
     (if (eq? ret -1)
@@ -304,9 +580,7 @@
           [11 'EAGAIN]
           [19 'ENODEV]
           [errno  errno])
-        (let ([hdr (ptr-ref buffer _fuse_header)])
-          (set-fuse-header-payload! hdr (ptr-add buffer 1 _fuse_in_header))
-          hdr))))
+        buffer)))
 
 (define (send channel unique errno data [ctype-or-size #f])
   (define data-size
@@ -318,8 +592,14 @@
   (define size (+ (ctype-sizeof _fuse_out_header) data-size))
   (define buffer (malloc 'atomic size))
   (define code (if errno (- (errno->code errno)) 0))
-  (ptr-set! buffer _fuse_out_header (make-fuse_out_header size code unique))
-  (when data (memcpy buffer (ctype-sizeof _fuse_out_header) data data-size))
+  (ptr-set! buffer _fuse_out_header (fuse_out_header size code unique))
+  (cond
+    [(not data)
+     (void)]
+    [(ctype? ctype-or-size)
+     (ptr-set! (skip-fuse_out_header buffer) ctype-or-size data)]
+    [else
+     (memcpy buffer (ctype-sizeof _fuse_out_header) data data-size)])
   (let ([written (write (channel-fd channel) buffer size)]) ; buffer size
     (unless (eq? size written)
       (let* ([code (saved-errno)]
@@ -327,281 +607,3 @@
         (log-fuse-warning "send failed: ~a: ~a" errno (errno->message errno))
         (when (eq? errno 'EINVAL)
           (raise-user-error 'fuse "send: Invalid argument"))))))
-
-(define-cstruct _fuse_out_header
-  ([len    _uint32]
-   [error  _int32]
-   [unique _uint64]))
-
-(define _opcode
-  (_enum '(FUSE_LOOKUP = 1
-           FUSE_FORGET = 2
-           FUSE_GETATTR = 3
-           FUSE_SETATTR = 4
-           FUSE_READLINK = 5
-           FUSE_SYMLINK = 6
-           FUSE_MKNOD = 8
-           FUSE_MKDIR = 9
-           FUSE_UNLINK = 10
-           FUSE_RMDIR = 11
-           FUSE_RENAME = 12
-           FUSE_LINK = 13
-           FUSE_OPEN = 14
-           FUSE_READ = 15
-           FUSE_WRITE = 16
-           FUSE_STATFS = 17
-           FUSE_RELEASE = 18
-           FUSE_FSYNC = 20
-           FUSE_SETXATTR = 21
-           FUSE_GETXATTR = 22
-           FUSE_LISTXATTR = 23
-           FUSE_REMOVEXATTR = 24
-           FUSE_FLUSH = 25
-           FUSE_INIT = 26
-           FUSE_OPENDIR = 27
-           FUSE_READDIR = 28
-           FUSE_RELEASEDIR = 29
-           FUSE_FSYNCDIR = 30
-           FUSE_GETLK = 31
-           FUSE_SETLK = 32
-           FUSE_SETLKW = 33
-           FUSE_ACCESS = 34
-           FUSE_CREATE = 35
-           FUSE_INTERRUPT = 36
-           FUSE_BMAP = 37
-           FUSE_DESTROY = 38
-           FUSE_IOCTL = 39
-           FUSE_POLL = 40
-           FUSE_NOTIFY_REPLY = 41
-           FUSE_BATCH_FORGET = 42
-           FUSE_FALLOCATE = 43
-           FUSE_READDIRPLUS = 44
-           FUSE_RENAME2 =45)
-         _uint32))
-
-(define-cstruct _fuse_in_header
-  ([len     _uint32]
-   [opcode  _opcode]
-   [unique  _uint64]
-   [nodeid  _uint64]
-   [uid     _uint32]
-   [gid     _uint32]
-   [pid     _uint32]
-   [padding _uint32]))
-
-(struct fuse-header (len opcode unique nodeid uid gid pid [payload #:mutable]))
-
-(define _fuse_header
-  (make-ctype
-   _fuse_in_header
-   (lambda (hdr)
-     (make-fuse_in_header
-      (fuse-header-len hdr)
-      (fuse-header-opcode hdr)
-      (fuse-header-unique hdr)
-      (fuse-header-nodeid hdr)
-      (fuse-header-uid hdr)
-      (fuse-header-gid hdr)
-      (fuse-header-pid hdr)
-      0))
-   (lambda (hdr)
-     (fuse-header
-      (fuse_in_header-len hdr)
-      (fuse_in_header-opcode hdr)
-      (fuse_in_header-unique hdr)
-      (fuse_in_header-nodeid hdr)
-      (fuse_in_header-uid hdr)
-      (fuse_in_header-gid hdr)
-      (fuse_in_header-pid hdr)
-      #f))))
-
-(define _setattr_valid
-  (_bitmask '(FATTR_MODE  = 1
-              FATTR_UID   = 2
-              FATTR_GID   = 4
-              FATTR_SIZE  = 8
-              FATTR_ATIME = 16
-              FATTR_MTIME = 32
-              FATTR_USER  = 64)
-            _uint32))
-
-(define-cstruct _fuse_open_out
-  ([user    _racket]
-   [flags   _flag_t]
-   [padding _uint32]))
-
-(define-cstruct _fuse_read_in
-  ([user    _racket]
-   [offset  _uint64]
-   [size    _uint32]
-   [rflags  _uint32]
-   [lckown  _uint64]
-   [flags   _flag_t]
-   [padding _uint32])
-  #:define-unsafe)
-
-(define-cstruct _fuse_release_in
-  ([user          _racket]
-   [flags         _flag_t]
-   [release_flags _uint32]
-   [lock_owner    _uint64])
-  #:define-unsafe)
-
-(define-cstruct _fuse_dirent
-  ([ino     _uint64]
-   [offset  _uint64]
-   [namelen _uint32]
-   [type    _mode_t]))
-
-(define-cstruct _fuse_in_setattr
-  ([valid _setattr_valid]
-   [padding _uint32]
-   [user _racket]
-   [size _uint64]
-   [unused1 _uint64]
-   [atime _int64]
-   [mtime _int64]
-   [unused2 _uint64]
-   [atimensec _int32]
-   [mtimensec _int32]
-   [unused3 _uint32]
-   [mode _uint32]
-   [unused4 _uint32]
-   [uid _uint32]
-   [gid _uint32]
-   [unused5 _uint32]))
-
-(define-cstruct _fuse_attr_out
-  ([attr_valid      _uint64]
-   [attr_valid_nsec _uint32]
-   [dummy           _uint32]
-   [ino             _uint64]
-   [size            _uint64]
-   [blocks          _uint64]
-   [atime           _uint64]
-   [mtime           _uint64]
-   [ctime           _uint64]
-   [atimensec       _uint32]
-   [mtimensec       _uint32]
-   [ctimensec       _uint32]
-   [mode            _mode_t]
-   [nlink           _uint32]
-   [uid             _uint32]
-   [gid             _uint32]
-   [rdev            _uint32]
-   [blksize         _uint32]
-   [padding         _uint32]))
-
-(define-cstruct _fuse_entry_out
-  ([nodeid          _uint64]
-   [generation      _uint64]
-   [ent_valid       _uint64]
-   [attr_valid      _uint64]
-   [ent_valid_nsec  _uint32]
-   [atrr_valid_nsec _uint32]
-   [ino             _uint64]
-   [size            _uint64]
-   [blocks          _uint64]
-   [atime           _uint64]
-   [mtime           _uint64]
-   [ctime           _uint64]
-   [atimensec       _uint32]
-   [mtimensec       _uint32]
-   [ctimensec       _uint32]
-   [mode            _mode_t]
-   [nlink           _uint32]
-   [uid             _uint32]
-   [gid             _uint32]
-   [rdev            _uint32]
-   [blksize         _uint32]
-   [padding         _uint32]))
-
-(define _fuse_flags
-  (_bitmask '(FUSE_ASYNC_READ     = 1
-              FUSE_POSIX_LOCKS    = 2
-              FUSE_FILE_OPS       = 4
-              FUSE_ATOMIC_O_TRUNC = 8
-              FUSE_EXPORT_SUPPORT = 16
-              FUSE_BIG_WRITES     = 32
-              FUSE_DONT_MASK      = 64)
-            _uint32))
-
-(define-cstruct _fuse_init_in
-  ([major _uint32]
-   [minor _uint32]
-   [max_readahead _uint32]
-   [flags _fuse_flags])
-  #:define-unsafe)
-
-(define _unused_array (_array _uint32 9))
-(define unused-init-array
-  (let ([buffer (malloc 'atomic _unused_array)])
-    (ptr-ref buffer _unused_array)))
-
-(define-cstruct _fuse_init_out_old
-  ([major _uint32]
-   [minor _uint32]
-   [max_readahead _uint32]
-   [flags _fuse_flags]
-   [max_background _uint16]
-   [congestion_threshold _uint16]
-   [max_write _uint32]))
-
-(define-cstruct _fuse_init_out
-  ([major _uint32]
-   [minor _uint32]
-   [max_readahead _uint32]
-   [flags _fuse_flags]
-   [max_background _uint16]
-   [congestion_threshold _uint16]
-   [max_write _uint32]
-   [time_gran _uint32]
-   [unused _unused_array]))
-
-(define (decode-payload hdr type)
-  (ptr-ref (fuse-header-payload hdr) type))
-
-(module+ test
-  (let* ([lookup (lambda (#:nodeid nodeid #:name name #:reply reply-entry #:error error)
-                   (if (and (= nodeid 1) (equal? name (string->path "hello.txt")))
-                       (reply-entry #:generation 0 #:entry-valid (timespec 1 0) #:attr-valid (timespec 1 0)
-                                    #:inode 2 #:rdev 0 #:size 13 #:blocks 1
-                                    #:atime (timespec 1381237736 0) #:mtime (timespec 1381237736 0)
-                                    #:ctime (timespec 1381237736 0) #:kind 'S_IFREG
-                                    #:perm '(S_IRUSR S_IWUSR S_IRGRP S_IROTH)
-                                    #:nlink 1 #:uid 1000 #:gid 1000)
-                       (error 'ENOENT)))]
-         [getattr (lambda (#:nodeid nodeid #:info info #:reply reply-attr #:error error)
-                    (match nodeid
-                      [1 (reply-attr #:attr-valid (timespec 1 0)
-                                     #:inode 1 #:rdev 0 #:size 0 #:blocks 0
-                                     #:atime (timespec 1381237736 0) #:mtime (timespec 1381237736 0)
-                                     #:ctime (timespec 1381237736 0) #:kind 'S_IFDIR
-                                     #:perm '(S_IRUSR S_IWUSR S_IXUSR S_IRGRP S_IXGRP S_IROTH S_IXOTH)
-                                     #:nlink 1 #:uid 1000 #:gid 1000)]
-                      [2 (reply-attr #:attr-valid (timespec 1 0)
-                                     #:inode 2 #:rdev 0 #:size 13 #:blocks 1
-                                     #:atime (timespec 1381237736 0) #:mtime (timespec 1381237736 0)
-                                     #:ctime (timespec 1381237736 0) #:kind 'S_IFREG
-                                     #:perm '(S_IRUSR S_IWUSR S_IRGRP S_IROTH)
-                                     #:nlink 1 #:uid 1000 #:gid 10000)]
-                      [_ (error 'ENOENT)]))]
-         [readdir (lambda (#:nodeid nodeid #:info info #:offset offset #:add reply-add #:reply reply-done #:error error)
-                    (if (= nodeid 1)
-                        (begin
-                          (when (= offset 0)
-                            (reply-add #:inode 1 #:offset 0 #:kind 'S_IFDIR #:name (string->path "."))
-                            (reply-add #:inode 1 #:offset 1 #:kind 'S_IFDIR #:name (string->path ".."))
-                            (reply-add #:inode 1 #:offset 2 #:kind 'S_IFREG #:name (string->path "hello.txt")))
-                          (reply-done))
-                        (error 'ENOENT)))]
-         [open (lambda (#:nodeid nodeid #:flags flags #:reply reply-open #:error error)
-                 (log-fuse-debug "open ~a ~a" nodeid flags)
-                 (if (= nodeid 2)
-                     (reply-open #:info #f #:flags flags)
-                     (error 'EISDIR)))]
-         [read (lambda (#:nodeid nodeid #:info info #:offset offset #:size size #:reply reply-data #:error error)
-                 (reply-data (string->bytes/utf-8 "Hello world!\n")))]
-         [hello (make-filesystem #:lookup lookup #:getattr getattr #:readdir readdir #:open open #:read read)]
-         [session (make-session hello (string->path "/home/vagrant/tmp") (list "default_permissions" "allow_other" "large_read" "direct_io" "hard_remove"))])
-    (run session)))
