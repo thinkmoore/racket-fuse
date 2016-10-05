@@ -1,5 +1,9 @@
 #lang racket/base
 
+; This example was adapted from the hello filesystem example distributed with
+; libfuse (https://github.com/libfuse/libfuse/blob/master/example/hello_ll.c)
+; and the rust-fuse package (https://github.com/zargony/rust-fuse)
+
 (require racket/match
          racket/list
          fuse)

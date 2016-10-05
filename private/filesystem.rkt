@@ -41,7 +41,8 @@
                          #:create      create/c
                          #:getlk       getlk/c
                          #:setlk       setlk/c
-                         #:bmap        bmap/c)
+                         #:bmap        bmap/c
+                         #:fallocate   fallocate/c)
                         filesystem?)])
  filesystem?
  filesystem-init
@@ -78,6 +79,7 @@
  filesystem-getlk
  filesystem-setlk
  filesystem-bmap
+ filesystem-fallocate
  request-pid
  request-gid
  request-uid)
@@ -86,7 +88,7 @@
   (init destroy lookup forget getattr setattr readlink mknod mkdir unlink rmdir
    symlink rename link open read write flush release fsync opendir readdir
    releasedir fsyncdir statfs setxattr getxattr listxattr removexattr access
-   create getlk setlk bmap))
+   create getlk setlk bmap fallocate))
 
 (define request-pid (make-parameter #f))
 (define request-uid (make-parameter #f))
@@ -112,12 +114,12 @@
          #:removexattr [removexattr default-removexattr]
          #:access [access default-access] #:create [create default-create]
          #:getlk [getlk default-getlk] #:setlk [setlk default-setlk]
-         #:bmap [bmap default-bmap])
+         #:bmap [bmap default-bmap] #:fallocate [fallocate default-fallocate])
   (filesystem
    init destroy lookup forget getattr setattr readlink mknod mkdir unlink rmdir
    symlink rename link open read write flush release fsync opendir readdir
    releasedir fsyncdir statfs setxattr getxattr listxattr removexattr access
-   create getlk setlk bmap))
+   create getlk setlk bmap fallocate))
 
 (define (use-once/c ctc)
   (make-contract
@@ -228,7 +230,7 @@
 (define (default-link #:nodeid nodeid #:oldnodeid newparent #:newname newname #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define reply-open/c (use-once/c (-> #:info any/c #:flags (listof open-out-flags?) void)))
+(define reply-open/c (use-once/c (-> #:info any/c #:flags open-out-flags/c void)))
 
 (define open/c (-> #:nodeid uint64? #:flags oflags/c #:reply reply-open/c #:error reply-error/c void))
 (define (default-open #:nodeid uint64? #:flags flags #:reply reply #:error error)
@@ -313,17 +315,17 @@
                                        #:size uint64? #:blocks uint64? #:atime timespec?
                                        #:mtime timespec? #:ctime timespec? #:kind filetype?
                                        #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
-                                       #:info (or/c #f any/c) #:flags (listof open-out-flags?)
+                                       #:info (or/c #f any/c) #:flags open-out-flags/c
                                       void)))
 (define create/c (-> #:nodeid uint64? #:name path? #:mode perm/c #:umask perm/c #:flags oflags/c
                      #:reply reply-create/c #:error reply-error/c void))
 (define (default-create #:nodeid nodeid #:name name #:mode mode #:umask umask #:flags flags #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define reply-lock/c (use-once/c (-> #:type lock-type? #:whence lock-whence? #:start uint64? #:length uint64? #:pid uint64? void)))
+(define reply-lock/c (use-once/c (-> #:type lock-types/c #:whence lock-whence? #:start uint64? #:length uint64? #:pid uint64? void)))
 
 (define getlk/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:owner uint64? #:start uint64? #:end uint64?
-                    #:type lock-type? #:pid uint64? #:reply reply-lock/c #:error reply-error/c void))
+                    #:type lock-types/c #:pid uint64? #:reply reply-lock/c #:error reply-error/c void))
 (define (default-getlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end
           #:type type #:pid pid #:reply reply #:error error)
   (error 'ENOSYS))
@@ -338,4 +340,10 @@
 
 (define bmap/c (-> #:nodeid uint64? #:blocksize uint32? #:index uint64? #:reply reply-bmap/c #:error reply-error/c void))
 (define (default-bmap #:nodeid nodeid #:blocksize size #:index index #:reply reply #:error error)
+  (error 'ENOSYS))
+
+(define fallocate/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:mode fallocate-mode?
+                        #:offset uint64? #:length uint64? #:reply reply-empty/c #:error reply-error/c void))
+(define (default-fallocate #:nodeid nodeid #:info info #:mode mode #:offset offset #:length length
+          #:reply reply #:error error)
   (error 'ENOSYS))

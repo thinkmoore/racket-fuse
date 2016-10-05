@@ -146,6 +146,11 @@
   (define (reply-write #:written written)
     (let ([data (fuse_write_out written 0)])
       (send (session-channel session) unique #f data _fuse_write_out)))
+  (define (reply-lock #:start start #:end end #:type type #:pid pid)
+    (let ([data (fuse_lk_out start end type pid)])
+      (send (session-channel session) unique #f data _fuse_lk_out)))
+  (define (reply-bmap #:index index)
+    (send (session-channel session) unique #f index _uint64))
   (define (reply-create #:entry-valid ent-valid #:attr-valid attr-valid
                         #:generation generation #:inode inode #:rdev rdev
                         #:size size #:blocks blocks #:atime atime
@@ -506,7 +511,7 @@
        (let* ([getxattr   (filesystem-getxattr (session-filesystem session))]
               [in         (decode-fuse_getxattr_in payload)]
               [size       (fuse_getxattr_in-size in)]
-              [name-ptr   (skip_fuse_getxattr_in payload)]
+              [name-ptr   (skip-fuse_getxattr_in payload)]
               [name       (bytes->string/locale (cast name-ptr _pointer _bytes))])
          (log-fuse-info "FUSE_GETXATTR nodeid: ~a name: ~a size: ~a" nodeid name size)
          (getxattr #:nodeid nodeid #:name name #:reply (make-reply-sized size) #:error reply-error))]
@@ -515,25 +520,110 @@
               [in         (decode-fuse_getxattr_in payload)]
               [size       (fuse_getxattr_in-size in)])
          (log-fuse-info "FUSE_LISTXATTR nodeid: ~a size: ~a" nodeid size)
-         (listxattr #:nodeid nodeid #:name name #:reply (make-reply-sized-list size) #:error reply-error))]
+         (listxattr #:nodeid nodeid #:reply (make-reply-sized-list size) #:error reply-error))]
       ['FUSE_REMOVEXATTR
        (let* ([removexattr (filesystem-removexattr (session-filesystem session))]
               [name        (bytes->string/locale (cast payload _pointer _bytes))])
          (log-fuse-info "FUSE_REMOVEXATTR nodeid: ~a name: ~a" nodeid name)
          (removexattr #:nodeid nodeid #:name name #:reply reply-empty #:error reply-error))]
-      ['FUSE_GETLK (reply-error 'ENOSYS)]
-      ['FUSE_SETLK (reply-error 'ENOSYS)]
-      ['FUSE_SETLKW (reply-error 'ENOSYS)]
-      ['FUSE_INTERRUPT (reply-error 'ENOSYS)]
-      ['FUSE_BMAP (reply-error 'ENOSYS)]
-      ['FUSE_IOCTL (reply-error 'ENOSYS)]
-      ['FUSE_POLL (reply-error 'ENOSYS)]
-      ['FUSE_NOTIFY_REPLY (reply-error 'ENOSYS)]
-      ['FUSE_BATCH_FORGET (reply-error 'ENOSYS)]
-      ['FUSE_FALLOCATE (reply-error 'ENOSYS)]
-      ['FUSE_READDIRPLUS (reply-error 'ENOSYS)]
-      ['FUSE_RENAME2 (reply-error 'ENOSYS)]
-      [op (reply-error 'ENOSYS)])))
+      ['FUSE_GETLK
+       (let* ([getlk       (filesystem-getlk (session-filesystem session))]
+              [in          (decode-fuse_lk_in payload)]
+              [info        (fuse_lk_in-user in)]
+              [owner       (fuse_lk_in-owner in)]
+              [start       (fuse_lk_in-start in)]
+              [end         (fuse_lk_in-end in)]
+              [type        (fuse_lk_in-type in)]
+              [pid         (fuse_lk_in-pid in)])
+         (log-fuse-info "FUSE_GETLK nodeid: ~a owner: ~a start: ~a end: ~a type: ~a pid: ~a"
+                        nodeid owner start end type pid)
+         (getlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end
+                #:type type #:pid pid #:reply reply-lock #:error reply-error))]
+      ['FUSE_SETLK
+       (let* ([setlk       (filesystem-setlk (session-filesystem session))]
+              [in          (decode-fuse_lk_in payload)]
+              [info        (fuse_lk_in-user in)]
+              [owner       (fuse_lk_in-owner in)]
+              [start       (fuse_lk_in-start in)]
+              [end         (fuse_lk_in-end in)]
+              [flags       (fuse_lk_in-flags in)]
+              [type        (or (and (check-flag flags 'FUSE_LK_FLOCK) (cons 'LOCK_NB (fuse_lk_in-type in)))
+                               (fuse_lk_in-type in))])
+         (log-fuse-info "FUSE_SETLK nodeid: ~a owner: ~a start: ~a end: ~a type: ~a flags: ~a"
+                        nodeid owner start end type flags)
+         (setlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end #:type type #:sleep #f
+                #:reply reply-empty #:error reply-error))]
+      ['FUSE_SETLKW
+       (let* ([setlk       (filesystem-setlk (session-filesystem session))]
+              [in          (decode-fuse_lk_in payload)]
+              [info        (fuse_lk_in-user in)]
+              [owner       (fuse_lk_in-owner in)]
+              [start       (fuse_lk_in-start in)]
+              [end         (fuse_lk_in-end in)]
+              [flags       (fuse_lk_in-flags in)]
+              [type        (fuse_lk_in-type in)])
+         (log-fuse-info "FUSE_SETLKW nodeid: ~a owner: ~a start: ~a end: ~a type: ~a flags: ~a"
+                        nodeid owner start end type flags)
+         (setlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end #:type type #:sleep #t
+                #:reply reply-empty #:error reply-error))]
+      ['FUSE_BMAP
+       (let* ([bmap        (filesystem-bmap (session-filesystem session))]
+              [in          (decode-fuse_bmap_in payload)]
+              [block       (fuse_bmap_in-block in)]
+              [blocksize   (fuse_bmap_in-blocksize in)])
+         (log-fuse-info "FUSE_BMAP nodeid: ~a block: ~a blocksize: ~a"
+                        nodeid block blocksize)
+         (bmap #:nodeid nodeid #:blocksize blocksize #:index block #:reply reply-bmap #:error reply-error))]
+      ['FUSE_BATCH_FORGET
+       (let* ([forget  (filesystem-forget (session-filesystem session))]
+              [in      (decode-fuse_batch_forget_in payload)]
+              [count   (fuse_batch_forget_in-count in)])
+         (for/fold ([next (skip-fuse_batch_forget_in payload)])
+                   ([i    (in-range count)])
+           (let* ([entry   (decode-fuse_forget_one next)]
+                  [nodeid  (fuse_forget_one-nodeid entry)]
+                  [nlookup (fuse_forget_one-nlookup entry)])
+             (log-fuse-info "FUSE_BATCH_FORGET nodeid: ~a nlookup: ~a" nodeid nlookup)
+             (forget #:nodeid nodeid #:nlookup nlookup)
+             (skip-fuse_forget_one next))))]
+      ['FUSE_FALLOCATE
+       (let* ([fallocate (filesystem-fallocate (session-filesystem session))]
+              [in        (decode-fuse_fallocate_in payload)]
+              [info      (fuse_fallocate_in-user in)]
+              [mode      (fuse_fallocate_in-mode in)]
+              [offset    (fuse_fallocate_in-offset in)]
+              [length    (fuse_fallocate_in-length in)])
+         (log-fuse-info "FUSE_FALLOCATE nodeid: ~a mode: ~a offset: ~a length: ~a" nodeid mode offset length)
+         (fallocate #:nodeid nodeid #:info info #:mode mode #:offset offset #:length length
+                    #:reply reply-empty #:error reply-error))]
+       ['FUSE_READDIRPLUS ;XXX Support readdirplus
+        (begin
+          (log-fuse-info "FUSE_READDIRPLUS not supported")
+          (reply-error 'ENOSYS))]
+       ['FUSE_RENAME2 ;XXX Support rename2
+        (begin
+          (log-fuse-info "FUSE_RENAME2 not supported")
+          (reply-error 'ENOSYS))]
+      ['FUSE_INTERRUPT ;XXX Support interrupts
+       (begin
+         (log-fuse-warning "FUSE_INTERRUPT not supported")
+         (reply-error 'ENOSYS))]
+      ['FUSE_IOCTL ;XXX Support IOCTL
+       (begin
+         (log-fuse-info "FUSE_IOCTL not supported")
+         (reply-error 'ENOSYS))]
+      ['FUSE_POLL ;XXX Support poll
+       (begin
+         (log-fuse-info "FUSE_POLL not support")
+         (reply-error 'ENOSYS))]
+      ['FUSE_NOTIFY_REPLY ;XXX support notifications
+       (begin
+         (log-fuse-info "FUSE_NOTIFY_REPLY not supported")
+         (reply-error 'ENOSYS))]
+      [op
+       (begin
+         (log-fuse-warning "FUSE operation ~a not supported" op)
+         (reply-error 'ENOSYS))])))
 
 (define libfuse (ffi-lib "libfuse"))
 (define libc (ffi-lib #f))

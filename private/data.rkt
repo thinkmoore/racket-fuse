@@ -39,16 +39,31 @@
           (define (pred v)
             (member v '(def.name ...))))))]))
 
+(define-syntax (provide-enum stx)
+  (syntax-parse stx
+    [(_ name:id)
+     (with-syntax ([pred (format-id #'name "~a?" #'name)])
+       #'(provide pred))]))
+
 (define-syntax (define-bitmask stx)
   (syntax-parse stx
     [(_ name:id (def:bit-definer ...) type:id)
-     (with-syntax ([cname (format-id #'name "_~a" #'name)]
-                   [pred  (format-id #'name "~a?" #'name)])
+     (with-syntax ([cname (format-id #'name "_~as" #'name)]
+                   [pred  (format-id #'name "~a?" #'name)]
+                   [ctc   (format-id #'name "~as/c" #'name)])
        (template
         (begin
           (define cname (_bitmask '((?@ . def) ...) type))
           (define (pred v)
-            (member v '(def.name ...))))))]))
+            (member v '(def.name ...)))
+          (define ctc (or/c pred (listof pred))))))]))
+
+(define-syntax (provide-bitmask stx)
+  (syntax-parse stx
+    [(_ name:id)
+     (with-syntax ([pred (format-id #'name "~a?" #'name)]
+                   [ctc  (format-id #'name "~as/c" #'name)])
+       #'(provide pred ctc))]))
 
 (define-enum xattr-op
   (XATTR_DEFAULT = 0
@@ -56,7 +71,7 @@
    XATTR_REPLACE)
   _uint32)
 
-(provide xattr-op?)
+(provide-enum xattr-op)
 
 (define-bitmask mode
   (S_IFSOCK = #o140000
@@ -89,14 +104,20 @@
   (member t '(S_IFSOCK S_IFLNK S_IFREG S_IFBLK S_IFDIR S_IFCHR S_IFIFO)))
 
 (define (mode->perm mode)
-  (if (list? mode)
-      (filter perm? mode)
-      (if (perm? mode) mode #f)))
+  (cond
+    [(list? mode) (filter perm? mode)]
+    [(perm? mode) mode]
+    [else #f]))
 
 (define (mode->filetype mode)
-  (if (list? mode)
-      (filter filetype? mode)
-      (if (filetype? mode) mode #f)))
+  (cond
+    [(list? mode)
+     (let ([fts (filter filetype? mode)])
+       (if (= (length fts) 1)
+           (car fts)
+           #f))]
+    [(filetype? mode) mode]
+    [else #f]))
 
 (provide mode? perm? perm/c filetype? mode->perm mode->filetype)
 
@@ -121,17 +142,7 @@
    O_NOATIME   = #o01000000)
   _uint32)
 
-(define oflags/c (listof oflag?))
-
-(provide oflags/c oflag?)
-
-(define-enum lock-type
-  (F_RDLCK = 5
-   F_WRLCK
-   F_UNLCK)
-  _short)
-
-(provide lock-type?)
+(provide-bitmask oflag)
 
 (define-enum lock-whence
   (SEEK_SET = 0
@@ -139,7 +150,7 @@
    SEEK_END)
   _short)
 
-(provide lock-whence?)
+(provide-enum lock-whence)
 
 (define (uint64? n)
   (and (exact-nonnegative-integer? n)
@@ -157,10 +168,9 @@
     [else (append f1 f2)]))
 
 (define (check-flag flags flag)
-  (cond
-    [(eq? flags flag) #t]
-    [(and (list? flags) (member flag flags)) #t]
-    [else #f]))
+  (if (list? flags)
+      (member flag flags)
+      (eq? flag flags)))
 
 (provide uint64? uint32? or-flags check-flag)
 
@@ -178,13 +188,15 @@
    FATTR_CTIME)
   _uint32)
 
-(define-bitmask open-out-flags
+(provide-bitmask setattr-valid)
+
+(define-bitmask open-out-flag
   (FOPEN_DIRECT_IO FOPEN_KEEP_CACHE FOPEN_NONSEEKABLE)
   _uint32)
 
-(provide open-out-flags?)
+(provide-bitmask open-out-flag)
 
-(define-bitmask fuse-flags
+(define-bitmask fuse-flag
   (FUSE_ASYNC_READ
    FUSE_POSIX_LOCKS
    FUSE_FILE_OPS
@@ -204,15 +216,21 @@
    FUSE_NO_OPEN_SUPPORT)
   _uint32)
 
-(define-bitmask write-flags
+(provide-bitmask fuse-flag)
+
+(define-bitmask write-flag
   (FUSE_WRITE_CACHE FUSE_WRITE_LOCKOWNER)
   _uint32)
 
-(define-bitmask read-flags
+(provide-bitmask write-flag)
+
+(define-bitmask read-flag
   (FUSE_READ_LOCKOWNER)
   _uint32)
 
-(define-bitmask ioctl-flags
+(provide-bitmask read-flag)
+
+(define-bitmask ioctl-flag
   (FUSE_IOCTL_COMPAT
    FUSE_IOCTL_UNRESTRICTED
    FUSE_IOCTL_RETRY
@@ -220,29 +238,58 @@
    FUSE_IOCTL_DIR)
   _uint32)
 
-(define-bitmask poll-flags
+(provide-bitmask ioctl-flag)
+
+(define-bitmask poll-flag
   (FUSE_POLL_SCHEDULE_NOTIFY)
   _uint32)
 
-(define-bitmask getattr-flags
+(provide-bitmask poll-flag)
+
+(define-bitmask getattr-flag
   (FUSE_GETATTR_FH)
   _uint32)
 
-(define-bitmask release-flags
+(provide-bitmask getattr-flag)
+
+(define-bitmask release-flag
   (FUSE_RELEASE_FLUSH FUSE_RELEASE_FLOCK_UNLOCK)
   _uint32)
 
-(define-bitmask lock-flags
+(provide-bitmask release-flag)
+
+(define-bitmask lock-type
+  (LOCK_SH LOCK_EX LOCK_NB LOCK_UN
+   LOCK_MAND = 32 LOCK_READ LOCK_WRITE LOCK_RW)
+  _uint32)
+
+(provide-bitmask lock-type)
+
+(define-enum fuse-lock-type
+  (F_RDLCK = 1
+   F_WRLCK = 2
+   F_UNLCK = 8)
+  _uint32)
+
+(provide-enum fuse-lock-type)
+
+(define-bitmask lock-flag
   (FUSE_LK_FLOCK)
   _uint32)
 
-(define-bitmask rename-flags
+(provide-bitmask lock-flag)
+
+(define-bitmask rename-flag
   (RENAME_EXCHANGE RENAME_NOREPLACE RENAME_WHITEOUT)
   _uint32)
 
-(define-bitmask fsync-flags
+(provide-bitmask rename-flag)
+
+(define-bitmask fsync-flag
   (DATASYNC)
   _uint32)
+
+(provide-bitmask fsync-flag)
 
 (define-enum opcode
   (FUSE_LOOKUP = 1
@@ -290,7 +337,9 @@
    FUSE_RENAME2)
   _uint32)
 
-(define-enum notify_code
+(provide-enum opcode)
+
+(define-enum notify-code
   (FUSE_NOTIFY_POLL = 1
    FUSE_NOTIFY_INVAL_INODE
    FUSE_NOTIFY_INVAL_ENTRY
@@ -299,6 +348,19 @@
    FUSE_NOTIFY_DELETE
    FUSE_NOTIFY_CODE_MAX)
   _uint32)
+
+(provide-enum notify-code)
+
+(define-enum fallocate-mode
+  (FALLOC_FL_KEEP_SIZE = 1
+   FALLOC_FL_PUNCH_HOLE = 2
+   FALLOC_FL_NO_HIDE_STALE = 4
+   FALLOC_FL_COLLAPSE_RANGE = 8
+   FALLOC_FL_ZERO_RANGE = 16
+   FALLOC_FL_INSERT_RANGE = 32)
+  _uint32)
+
+(provide-enum fallocate-mode)
 
 (define-syntax (define-message stx)
   (define (generate-accessors name fields)
@@ -346,7 +408,7 @@
    [atimensec       _uint32]
    [mtimensec       _uint32]
    [ctimensec       _uint32]
-   [mode            _mode]
+   [mode             _modes]
    [nlink           _uint32]
    [uid             _uint32]
    [gid             _uint32]
@@ -383,7 +445,7 @@
    [atimensec       _uint32]
    [mtimensec       _uint32]
    [ctimensec       _uint32]
-   [mode              _mode]
+   [mode             _modes]
    [nlink           _uint32]
    [uid             _uint32]
    [gid             _uint32]
@@ -392,15 +454,15 @@
    [padding         _uint32]))
 
 (define-message fuse_mknod_in
-  ([mode    _mode]
+  ([mode   _modes]
    [rdev  _uint32]
-   [umask   _mode]
+   [umask  _modes]
    [dummy _uint32]))
 
 
 (define-message fuse_mkdir_in
-  ([mode  _mode]
-   [umask _mode]))
+  ([mode  _modes]
+   [umask _modes]))
 
 (define-message fuse_rename_in
   ([newdir _uint64]))
@@ -414,7 +476,7 @@
   ([oldnodeid _uint64]))
 
 (define-message fuse_setattr_in
-  ([valid    _setattr-valid]
+  ([valid   _setattr-valids]
    [padding         _uint32]
    [user            _racket]
    [size            _uint64]
@@ -425,20 +487,20 @@
    [atimensec       _uint32]
    [mtimensec       _uint32]
    [ctimensec       _uint32]
-   [mode              _mode]
+   [mode             _modes]
    [unused4         _uint32]
    [uid             _uint32]
    [gid             _uint32]
    [unused5         _uint32]))
 
 (define-message fuse_open_in
-  ([flags   _oflag]
+  ([flags  _oflags]
    [unused _uint32]))
 
 (define-message fuse_create_in
-  ([flags    _oflag]
-   [mode      _mode]
-   [umask     _mode]
+  ([flags   _oflags]
+   [mode     _modes]
+   [umask    _modes]
    [padding _uint32]))
 
 (define-message fuse_open_out
@@ -448,7 +510,7 @@
 
 (define-message fuse_release_in
   ([user          _racket]
-   [flags          _oflag]
+   [flags         _oflags]
    [rflags _release-flags]
    [lckowner      _uint64]))
 
@@ -464,14 +526,14 @@
    [size       _uint32]
    [rflags _read-flags]
    [lckown     _uint64]
-   [flags       _oflag]
+   [flags      _oflags]
    [padding    _uint32]))
 
 (define-message fuse_write_in
   ([user          _racket]
    [offset        _uint64]
    [size          _uint32]
-   [flags          _oflag]
+   [flags         _oflags]
    [lckowner      _uint64]
    [wflags   _write-flags]
    [padding       _uint32]))
@@ -519,19 +581,19 @@
    [owner     _uint64]
    [start     _uint64]
    [end       _uint64]
-   [type      _uint32]
+   [type  _lock-types]
    [pid       _uint32]
    [flags _lock-flags]
    [pad       _uint32]))
 
-(define-message fusk_lk_out
+(define-message fuse_lk_out
   ([start     _uint64]
    [end       _uint64]
-   [type      _uint32]
+   [type  _lock-types]
    [pid       _uint32]))
 
 (define-message fuse_access_in
-  ([mask   _mode]
+  ([mask  _modes]
    [pad  _uint32]))
 
 (define-message fuse_init_in
@@ -605,11 +667,11 @@
   ([kh _uint64]))
 
 (define-message fuse_fallocate_in
-  ([user    _racket]
-   [offset  _uint64]
-   [length  _uint64]
-   [mode      _mode]
-   [padding _uint32]))
+  ([user            _racket]
+   [offset          _uint64]
+   [length          _uint64]
+   [mode    _fallocate-mode]
+   [padding         _uint32]))
 
 (define-message fuse_in_header
   ([len     _uint32]
@@ -630,7 +692,7 @@
   ([ino     _uint64]
    [offset  _uint64]
    [namelen _uint32]
-   [type    _mode]))
+   [type     _modes]))
 
 (define-message fuse_notify_inval_inode_out
   ([inode  _uint64]
