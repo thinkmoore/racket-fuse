@@ -182,11 +182,11 @@
                                      #:mtime timespec? #:ctime timespec? #:kind filetype?
                                      #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
                                      void)))
-(define getattr/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:reply reply-attr/c #:error reply-error/c void))
+(define getattr/c (-> #:nodeid uint64? #:info uint64? #:reply reply-attr/c #:error reply-error/c void))
 (define (default-getattr #:nodeid node #:info info #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define setattr/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:mode (maybe/c perm/c) #:uid (maybe/c uint32?)
+(define setattr/c (-> #:nodeid uint64? #:info uint64? #:mode (maybe/c perm/c) #:uid (maybe/c uint32?)
                       #:gid (maybe/c uint32?) #:size (maybe/c uint64?) #:atime (maybe/c timespec?)
                       #:mtime (maybe/c timespec?) #:ctime (maybe/c timespec?)
                       #:reply reply-attr/c #:error reply-error/c void))
@@ -236,29 +236,29 @@
 (define (default-open #:nodeid uint64? #:flags flags #:reply reply #:error error)
   (reply #:info #f #:flags (list)))
 
-(define read/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:offset uint64? #:size uint32? #:flags (or/c #f oflags/c) #:lockowner (or/c #f uint64?)
+(define read/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:size uint32? #:flags (or/c #f oflags/c) #:lockowner (or/c #f uint64?)
                    #:reply reply-data/c #:error reply-error/c void))
 (define (default-read #:nodeid uint64? #:info info #:offset offset #:size size #:flags flags #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
 (define reply-write/c (use-once/c (-> #:written uint32? void)))
 
-(define write/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:offset uint64? #:data bytes? #:flags oflags/c #:lockowner (or/c #f uint64?)
+(define write/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:data bytes? #:flags oflags/c #:lockowner (or/c #f uint64?)
                     #:reply reply-write/c #:error reply-error/c void))
 (define (default-write #:nodeid nodeid #:info info #:offset offset #:data data #:flags flags #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define flush/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:lockowner uint64? #:reply reply-empty/c #:error reply-error/c void))
+(define flush/c (-> #:nodeid uint64? #:info uint64? #:lockowner uint64? #:reply reply-empty/c #:error reply-error/c void))
 (define (default-flush #:nodeid nodeid #:info info #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define release/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:flags oflags/c #:lockowner uint64? #:flush boolean? #:unlock boolean?
+(define release/c (-> #:nodeid uint64? #:info uint64? #:flags oflags/c #:lockowner uint64? #:flush boolean? #:unlock boolean?
                       #:reply reply-empty/c #:error reply-error/c void))
 (define (default-release #:nodeid nodeid #:info info #:flags flags #:lockowner lockowner #:flush flush? #:unlock unlock?
           #:reply reply #:error error)
   (reply))
 
-(define fsync/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:syncdataonly boolean? #:reply reply-empty/c #:error reply-error/c void))
+(define fsync/c (-> #:nodeid uint64? #:info uint64? #:syncdataonly boolean? #:reply reply-empty/c #:error reply-error/c void))
 (define (default-fsync #:nodeid uint64? #:info info #:syncdataonly sync? #:reply reply #:error error)
   (error 'ENOSYS))
 
@@ -269,15 +269,15 @@
 (define reply-add/c (-> #:inode uint64? #:offset uint64? #:kind filetype? #:name path? boolean?))
 (define reply-done/c (use-once/c (-> void)))
 
-(define readdir/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:offset uint64? #:add reply-add/c #:reply reply-done/c #:error reply-error/c void))
+(define readdir/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:add reply-add/c #:reply reply-done/c #:error reply-error/c void))
 (define (default-readdir #:nodeid nodeid #:info info #:offset offset #:add add #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define releasedir/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:flags oflags/c #:reply reply-empty/c #:error reply-error/c void))
+(define releasedir/c (-> #:nodeid uint64? #:info uint64? #:flags oflags/c #:reply reply-empty/c #:error reply-error/c void))
 (define (default-releasedir #:nodeid nodeid #:info info #:flags flags #:reply reply #:error error)
   (reply))
 
-(define fsyncdir/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:syncdataonly boolean? #:reply reply-empty/c #:error reply-error/c void))
+(define fsyncdir/c (-> #:nodeid uint64? #:info uint64? #:syncdataonly boolean? #:reply reply-empty/c #:error reply-error/c void))
 (define (default-fsyncdir #:nodeid nodeid #:info info #:syncdataonly sync? #:reply reply #:error error)
   (error 'ENOSYS))
 
@@ -315,7 +315,7 @@
                                        #:size uint64? #:blocks uint64? #:atime timespec?
                                        #:mtime timespec? #:ctime timespec? #:kind filetype?
                                        #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
-                                       #:info (or/c #f any/c) #:flags open-out-flags/c
+                                       #:info uint64? #:flags open-out-flags/c
                                       void)))
 (define create/c (-> #:nodeid uint64? #:name path? #:mode perm/c #:umask perm/c #:flags oflags/c
                      #:reply reply-create/c #:error reply-error/c void))
@@ -324,13 +324,13 @@
 
 (define reply-lock/c (use-once/c (-> #:type lock-types/c #:whence lock-whence? #:start uint64? #:length uint64? #:pid uint64? void)))
 
-(define getlk/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:owner uint64? #:start uint64? #:end uint64?
+(define getlk/c (-> #:nodeid uint64? #:info uint64? #:owner uint64? #:start uint64? #:end uint64?
                     #:type lock-types/c #:pid uint64? #:reply reply-lock/c #:error reply-error/c void))
 (define (default-getlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end
           #:type type #:pid pid #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define setlk/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:owner uint64? #:start uint64? #:end uint64?
+(define setlk/c (-> #:nodeid uint64? #:info uint64? #:owner uint64? #:start uint64? #:end uint64?
                     #:type lock-type? #:sleep boolean? #:reply reply-empty/c #:error reply-error/c void))
 (define (default-setlk #:nodeid nodeid #:info info #:owner owner #:start start #:end end #:type type #:sleep sleep
           #:reply reply #:error error)
@@ -342,7 +342,7 @@
 (define (default-bmap #:nodeid nodeid #:blocksize size #:index index #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define fallocate/c (-> #:nodeid uint64? #:info (or/c #f any/c) #:mode fallocate-mode?
+(define fallocate/c (-> #:nodeid uint64? #:info uint64? #:mode fallocate-mode?
                         #:offset uint64? #:length uint64? #:reply reply-empty/c #:error reply-error/c void))
 (define (default-fallocate #:nodeid nodeid #:info info #:mode mode #:offset offset #:length length
           #:reply reply #:error error)

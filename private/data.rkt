@@ -430,7 +430,7 @@
 (define-message fuse_getattr_in
   ([flags   _getattr-flags]
    [dummy   _uint32]
-   [user    _racket]))
+   [user    _uint64]))
 
 (define-message fuse_attr_out
   ([attr_valid      _uint64]
@@ -478,7 +478,7 @@
 (define-message fuse_setattr_in
   ([valid   _setattr-valids]
    [padding         _uint32]
-   [user            _racket]
+   [user            _uint64]
    [size            _uint64]
    [unused1         _uint64]
    [atime           _uint64]
@@ -504,24 +504,24 @@
    [padding _uint32]))
 
 (define-message fuse_open_out
-  ([user          _racket]
+  ([user          _uint64]
    [flags _open-out-flags]
    [padding       _uint32]))
 
 (define-message fuse_release_in
-  ([user          _racket]
+  ([user          _uint64]
    [flags         _oflags]
    [rflags _release-flags]
    [lckowner      _uint64]))
 
 (define-message fuse_flush_in
-  ([user     _racket]
+  ([user     _uint64]
    [unused   _uint32]
    [padding  _uint32]
    [lckowner _uint64]))
 
 (define-message fuse_read_in
-  ([user       _racket]
+  ([user       _uint64]
    [offset     _uint64]
    [size       _uint32]
    [rflags _read-flags]
@@ -530,7 +530,7 @@
    [padding    _uint32]))
 
 (define-message fuse_write_in
-  ([user          _racket]
+  ([user          _uint64]
    [offset        _uint64]
    [size          _uint32]
    [flags         _oflags]
@@ -560,7 +560,7 @@
    [spare6  _uint32]))
 
 (define-message fuse_fsync_in
-  ([user       _racket]
+  ([user       _uint64]
    [flags _fsync-flags]
    [pad        _uint32]))
 
@@ -577,7 +577,7 @@
    [pad  _uint32]))
 
 (define-message fuse_lk_in
-  ([user      _racket]
+  ([user      _uint64]
    [owner     _uint64]
    [start     _uint64]
    [end       _uint64]
@@ -636,7 +636,7 @@
   ([block _uint64]))
 
 (define-message fuse_ioctl_in
-  ([user       _racket]
+  ([user       _uint64]
    [flags _ioctl-flags]
    [cmd        _uint32]
    [arg        _uint64]
@@ -654,7 +654,7 @@
    [out_iovs   _uint32]))
 
 (define-message fuse_poll_in
-  ([user      _racket]
+  ([user      _uint64]
    [kh        _uint64]
    [flags _poll-flags]
    [events    _uint32]))
@@ -667,7 +667,7 @@
   ([kh _uint64]))
 
 (define-message fuse_fallocate_in
-  ([user            _racket]
+  ([user            _uint64]
    [offset          _uint64]
    [length          _uint64]
    [mode    _fallocate-mode]
