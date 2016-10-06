@@ -49,7 +49,7 @@
       (reply-open #:info #f #:flags empty)
       (error 'EISDIR)))
 
-(define (read #:nodeid nodeid #:info info #:offset offset #:size size #:flags flags #:lockowner lockowner #:reply reply-data #:error error)
+(define (read #:nodeid nodeid #:info info #:offset offset #:size size #:lockowner lockowner #:reply reply-data #:error error)
   (reply-data (string->bytes/utf-8 "Hello world!\n")))
 
 (define hellofs (make-filesystem #:lookup lookup #:getattr getattr #:readdir readdir #:open open #:read read))

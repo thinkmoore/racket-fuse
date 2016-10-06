@@ -15,7 +15,9 @@
 (provide
  make-filesystem
  (struct-out timespec)
- (contract-out [mount-filesystem (-> filesystem? path? (listof string?) void)]))
+ (contract-out [mount-filesystem (-> filesystem? path? (listof string?) void)])
+ errno? modes/c oflags/c
+ reply-entry/c reply-empty/c reply-data/c reply-attr/c reply-error/c reply-write/c reply-create/c)
 
 (define-logger fuse)
 
@@ -330,7 +332,7 @@
               [flags      (fuse_read_in-flags in)]
               [lockowner  (and (check-flag (fuse_read_in-rflags in) (fuse_read_in-lckown in)))])
          (log-fuse-info "FUSE_READ nodeid: ~a offset: ~a size: ~a flags: ~a lockowner: ~a" nodeid offset size flags lockowner)
-         (read #:nodeid nodeid #:info info #:offset offset #:size size #:flags flags #:lockowner lockowner
+         (read #:nodeid nodeid #:info info #:offset offset #:size size #:lockowner lockowner
                #:reply reply-ok #:error reply-error))]
       ['FUSE_SETATTR ;XXX Should handle FATTR_FH and FATTR_LOCKOWNER
        (let* ([setattr    (filesystem-setattr (session-filesystem session))]
@@ -433,7 +435,7 @@
                          nodeid offset data flags lockowner)
          (if (check-flag wflags 'FUSE_WRITE_CACHE)
              (reply-error 'ENOSYS)
-             (write #:nodeid nodeid #:info info #:offset offset #:data data #:flags flags #:lockowner lockowner
+             (write #:nodeid nodeid #:info info #:offset offset #:data data #:lockowner lockowner
                     #:reply reply-write #:error reply-error)))]
       ['FUSE_RELEASE
        (let* ([release    (filesystem-release (session-filesystem session))]

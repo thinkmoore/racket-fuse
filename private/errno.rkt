@@ -5,7 +5,8 @@
 (provide (contract-out [errno? (-> any/c boolean?)]
                        [code->errno (-> integer? (or/c errno? #f))]
                        [errno->code (-> errno? integer?)]
-                       [errno->message (-> errno? string?)]))
+                       [errno->message (-> errno? string?)])
+         errno-symbols)
 
 (define (errno? v)
   (hash-has-key? sym->code v))
@@ -183,3 +184,5 @@
                'ERFKILL 132 "Operation not possible due to RF-kill"
                'EHWPOISON 133 "Memory page has hardware error"
                'ENOTSUP 95 "Operation not supported"))
+
+(define errno-symbols (hash-keys sym->code))

@@ -6,7 +6,8 @@
                      syntax/parse/experimental/template)
          syntax/parse
          ffi/unsafe
-         (only-in racket/contract or/c listof))
+         (only-in racket/contract or/c listof)
+         scribble/srcdoc)
 
 (struct timespec (sec nsec))
 
@@ -32,38 +33,44 @@
   (syntax-parse stx
     [(_ name:id (def:bit-definer ...) type:id)
      (with-syntax ([cname (format-id #'name "_~a" #'name)]
-                   [pred  (format-id #'name "~a?" #'name)])
+                   [pred  (format-id #'name "~a?" #'name)]
+                   [symbols (format-id #'name "~a-symbols" #'name)])
        (template
         (begin
           (define cname (_enum '((?@ . def) ...) type))
           (define (pred v)
-            (member v '(def.name ...))))))]))
+            (member v '(def.name ...)))
+          (define symbols '(def.name ...)))))]))
 
 (define-syntax (provide-enum stx)
   (syntax-parse stx
     [(_ name:id)
-     (with-syntax ([pred (format-id #'name "~a?" #'name)])
-       #'(provide pred))]))
+     (with-syntax ([pred (format-id #'name "~a?" #'name)]
+                   [symbols (format-id #'name "~a-symbols" #'name)])
+       #'(provide pred symbols))]))
 
 (define-syntax (define-bitmask stx)
   (syntax-parse stx
     [(_ name:id (def:bit-definer ...) type:id)
      (with-syntax ([cname (format-id #'name "_~as" #'name)]
                    [pred  (format-id #'name "~a?" #'name)]
-                   [ctc   (format-id #'name "~as/c" #'name)])
+                   [ctc   (format-id #'name "~as/c" #'name)]
+                   [symbols (format-id #'name "~a-symbols" #'name)])
        (template
         (begin
           (define cname (_bitmask '((?@ . def) ...) type))
           (define (pred v)
             (member v '(def.name ...)))
-          (define ctc (or/c pred (listof pred))))))]))
+          (define ctc (or/c pred (listof pred)))
+          (define symbols '(def.name ...)))))]))
 
 (define-syntax (provide-bitmask stx)
   (syntax-parse stx
     [(_ name:id)
      (with-syntax ([pred (format-id #'name "~a?" #'name)]
-                   [ctc  (format-id #'name "~as/c" #'name)])
-       #'(provide pred ctc))]))
+                   [ctc  (format-id #'name "~as/c" #'name)]
+                   [symbols (format-id #'name "~a-symbols" #'name)])
+       #'(provide pred ctc symbols))]))
 
 (define-enum xattr-op
   (XATTR_DEFAULT = 0
@@ -94,6 +101,8 @@
    S_IWOTH  = #o000002
    S_IXOTH  = #o000001)
   _uint32)
+
+(provide-bitmask mode)
 
 (define (perm? m)
   (member m '(S_ISUID S_ISGID S_ISVTX S_IRUSR S_IWUSR S_IXUSR S_IRGRP S_IWGRP S_IXGRP S_IROTH S_IWOTH S_IXOTH)))

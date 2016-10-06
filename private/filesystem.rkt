@@ -44,6 +44,13 @@
                          #:bmap        bmap/c
                          #:fallocate   fallocate/c)
                         filesystem?)])
+ init/c destroy/c lookup/c forget/c getattr/c setattr/c readlink/c
+ mknod/c mkdir/c unlink/c rmdir/c symlink/c rename/c link/c open/c
+ read/c write/c flush/c release/c fsync/c opendir/c readdir/c
+ releasedir/c fsyncdir/c statfs/c setxattr/c getxattr/c listxattr/c
+ removexattr/c access/c create/c getlk/c setlk/c bmap/c fallocate/c
+ reply-entry/c reply-empty/c reply-data/c reply-attr/c reply-error/c
+ reply-write/c reply-create/c
  filesystem?
  filesystem-init
  filesystem-destroy
@@ -236,16 +243,16 @@
 (define (default-open #:nodeid uint64? #:flags flags #:reply reply #:error error)
   (reply #:info #f #:flags (list)))
 
-(define read/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:size uint32? #:flags (or/c #f oflags/c) #:lockowner (or/c #f uint64?)
+(define read/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:size uint32? #:lockowner (or/c #f uint64?)
                    #:reply reply-data/c #:error reply-error/c void))
-(define (default-read #:nodeid uint64? #:info info #:offset offset #:size size #:flags flags #:lockowner lockowner #:reply reply #:error error)
+(define (default-read #:nodeid uint64? #:info info #:offset offset #:size size #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
 (define reply-write/c (use-once/c (-> #:written uint32? void)))
 
-(define write/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:data bytes? #:flags oflags/c #:lockowner (or/c #f uint64?)
+(define write/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:data bytes? #:lockowner (or/c #f uint64?)
                     #:reply reply-write/c #:error reply-error/c void))
-(define (default-write #:nodeid nodeid #:info info #:offset offset #:data data #:flags flags #:lockowner lockowner #:reply reply #:error error)
+(define (default-write #:nodeid nodeid #:info info #:offset offset #:data data #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
 (define flush/c (-> #:nodeid uint64? #:info uint64? #:lockowner uint64? #:reply reply-empty/c #:error reply-error/c void))
