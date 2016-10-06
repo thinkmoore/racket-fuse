@@ -46,7 +46,7 @@
 
 (define (open #:nodeid nodeid #:flags flags #:reply reply-open #:error error)
   (if (= nodeid 2)
-      (reply-open #:info #f #:flags empty)
+      (reply-open #:info 0 #:flags empty)
       (error 'EISDIR)))
 
 (define (read #:nodeid nodeid #:info info #:offset offset #:size size #:lockowner lockowner #:reply reply-data #:error error)
@@ -55,9 +55,9 @@
 (define hellofs (make-filesystem #:lookup lookup #:getattr getattr #:readdir readdir #:open open #:read read))
 
 (module+ main
-  (require racket/runtime-path)
-
-  (define-runtime-path tmp "tmp")
-  (unless (directory-exists? tmp)
-    (make-directory tmp))
-  (mount-filesystem hellofs tmp (list "default_permissions" "large_read" "direct_io" "hard_remove")))
+  (unless (eq? (vector-length (current-command-line-arguments)) 1)
+    (error "Must be invoked with an absolute path."))
+  (define path (vector-ref (current-command-line-arguments) 0))
+  (unless (directory-exists? path)
+    (error "Mount directory does not exist."))
+  (mount-filesystem hellofs (string->path path) (list "default_permissions" "large_read" "direct_io" "hard_remove")))

@@ -16,8 +16,12 @@
  make-filesystem
  (struct-out timespec)
  (contract-out [mount-filesystem (-> filesystem? path? (listof string?) void)])
- errno? modes/c oflags/c
- reply-entry/c reply-empty/c reply-data/c reply-attr/c reply-error/c reply-write/c reply-create/c)
+ uint32? uint64? errno? perms/c filetype? modes/c oflags/c fallocate-mode?
+ lock-types/c xattr-op? fallocate-mode?
+ request-pid request-gid request-uid
+ reply-entry/c reply-empty/c reply-data/c reply-attr/c reply-lock/c
+ reply-error/c reply-write/c reply-create/c reply-bmap/c
+ reply-open/c reply-statfs/c reply-listxattr/c)
 
 (define-logger fuse)
 
@@ -415,11 +419,11 @@
       ['FUSE_LINK
        (let* ([link        (filesystem-link (session-filesystem session))]
               [in          (decode-fuse_link_in payload)]
-              [oldnodeid   (fuse_link_in-oldnodeid in)]
+              [newparent   (fuse_link_in-newparent in)]
               [newname-ptr (skip-fuse_link_in payload)]
               [newname     (bytes->path-element (cast newname-ptr _pointer _bytes))])
-         (log-fuse-info "FUSE_LINK nodeid: ~a oldnodeid: ~a newname: ~a" nodeid oldnodeid newname)
-         (link #:nodeid nodeid #:oldnodeid oldnodeid #:newname newname #:reply reply-entry #:error reply-error))]
+         (log-fuse-info "FUSE_LINK nodeid: ~a newparent: ~a newname: ~a" nodeid newparent newname)
+         (link #:nodeid nodeid #:newparent newparent #:newname newname #:reply reply-entry #:error reply-error))]
       ['FUSE_WRITE ;XXX Should handle FUSE_WRITE_CACHE
        (let* ([write      (filesystem-write (session-filesystem session))]
               [in         (decode-fuse_write_in payload)]
@@ -448,7 +452,7 @@
               [lockowner  (fuse_release_in-lckowner in)])
          (log-fuse-info "FUSE_RELEASE nodeid: ~a flags: ~a lockowner: ~a flush: ~a unlock ~a"
                          nodeid flags lockowner flush? unlock?)
-         (release #:nodeid nodeid #:info info #:flags flags #:lockowner lockowner #:flush flush? #:unlock unlock?
+         (release #:nodeid nodeid #:info info #:lockowner lockowner #:flush flush? #:unlock unlock?
                   #:reply reply-empty #:error reply-error))]
       ['FUSE_FSYNC
        (let* ([fsync      (filesystem-fsync (session-filesystem session))]

@@ -50,7 +50,8 @@
  releasedir/c fsyncdir/c statfs/c setxattr/c getxattr/c listxattr/c
  removexattr/c access/c create/c getlk/c setlk/c bmap/c fallocate/c
  reply-entry/c reply-empty/c reply-data/c reply-attr/c reply-error/c
- reply-write/c reply-create/c
+ reply-write/c reply-create/c reply-statfs/c reply-listxattr/c
+ reply-lock/c reply-open/c reply-lock/c reply-bmap/c
  filesystem?
  filesystem-init
  filesystem-destroy
@@ -174,7 +175,7 @@
                                       #:inode uint64? #:rdev uint32?
                                       #:size uint64? #:blocks uint64? #:atime timespec?
                                       #:mtime timespec? #:ctime timespec? #:kind filetype?
-                                      #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
+                                      #:perm perms/c #:nlink uint32? #:uid uint32? #:gid uint32?
                                       void)))
 (define lookup/c (-> #:nodeid uint64? #:name path? #:reply reply-entry/c #:error reply-error/c void))
 (define (default-lookup #:nodeid node #:name name #:reply reply #:error error)
@@ -187,13 +188,13 @@
 (define reply-attr/c (use-once/c (-> #:attr-valid timespec? #:inode uint64? #:rdev uint32?
                                      #:size uint64? #:blocks uint64? #:atime timespec?
                                      #:mtime timespec? #:ctime timespec? #:kind filetype?
-                                     #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
+                                     #:perm perms/c #:nlink uint32? #:uid uint32? #:gid uint32?
                                      void)))
-(define getattr/c (-> #:nodeid uint64? #:info uint64? #:reply reply-attr/c #:error reply-error/c void))
+(define getattr/c (-> #:nodeid uint64? #:info (maybe/c uint64?) #:reply reply-attr/c #:error reply-error/c void))
 (define (default-getattr #:nodeid node #:info info #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define setattr/c (-> #:nodeid uint64? #:info uint64? #:mode (maybe/c perm/c) #:uid (maybe/c uint32?)
+(define setattr/c (-> #:nodeid uint64? #:info uint64? #:mode (maybe/c perms/c) #:uid (maybe/c uint32?)
                       #:gid (maybe/c uint32?) #:size (maybe/c uint64?) #:atime (maybe/c timespec?)
                       #:mtime (maybe/c timespec?) #:ctime (maybe/c timespec?)
                       #:reply reply-attr/c #:error reply-error/c void))
@@ -207,11 +208,11 @@
 (define (default-readlink #:nodeid nodeid #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define mknod/c (-> #:nodeid uint64? #:name path? #:kind filetype? #:mode perm/c #:umask perm/c #:rdev uint32? #:reply reply-entry/c #:error reply-error/c void))
+(define mknod/c (-> #:nodeid uint64? #:name path? #:kind filetype? #:mode perms/c #:umask perms/c #:rdev uint32? #:reply reply-entry/c #:error reply-error/c void))
 (define (default-mknod #:nodeid nodeid #:name name #:kind filetype #:mode mode #:umask umask #:rdev rdev #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define mkdir/c (-> #:nodeid uint64? #:name path? #:mode perm/c #:umask perm/c #:reply reply-entry/c #:error reply-error/c void))
+(define mkdir/c (-> #:nodeid uint64? #:name path? #:mode perms/c #:umask perms/c #:reply reply-entry/c #:error reply-error/c void))
 (define (default-mkdir #:nodeid uint64? #:name name #:mode mode #:umask umask  #:reply reply #:error error)
   (error 'ENOSYS))
 
@@ -233,15 +234,15 @@
 (define (default-rename #:nodeid nodeid #:name name #:newnodeid newnodeid #:newname newname #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define link/c (-> #:nodeid uint64? #:oldnodeid uint64? #:newname path? #:reply reply-entry/c #:error reply-error/c void))
-(define (default-link #:nodeid nodeid #:oldnodeid newparent #:newname newname #:reply reply #:error error)
+(define link/c (-> #:nodeid uint64? #:newparent uint64? #:newname path? #:reply reply-entry/c #:error reply-error/c void))
+(define (default-link #:nodeid nodeid #:newparent newparent #:newname newname #:reply reply #:error error)
   (error 'ENOSYS))
 
 (define reply-open/c (use-once/c (-> #:info any/c #:flags open-out-flags/c void)))
 
 (define open/c (-> #:nodeid uint64? #:flags oflags/c #:reply reply-open/c #:error reply-error/c void))
 (define (default-open #:nodeid uint64? #:flags flags #:reply reply #:error error)
-  (reply #:info #f #:flags (list)))
+  (reply #:info 0 #:flags (list)))
 
 (define read/c (-> #:nodeid uint64? #:info uint64? #:offset uint64? #:size uint32? #:lockowner (or/c #f uint64?)
                    #:reply reply-data/c #:error reply-error/c void))
@@ -259,9 +260,9 @@
 (define (default-flush #:nodeid nodeid #:info info #:lockowner lockowner #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define release/c (-> #:nodeid uint64? #:info uint64? #:flags oflags/c #:lockowner uint64? #:flush boolean? #:unlock boolean?
+(define release/c (-> #:nodeid uint64? #:info uint64? #:lockowner uint64? #:flush boolean? #:unlock boolean?
                       #:reply reply-empty/c #:error reply-error/c void))
-(define (default-release #:nodeid nodeid #:info info #:flags flags #:lockowner lockowner #:flush flush? #:unlock unlock?
+(define (default-release #:nodeid nodeid #:info info #:lockowner lockowner #:flush flush? #:unlock unlock?
           #:reply reply #:error error)
   (reply))
 
@@ -271,7 +272,7 @@
 
 (define opendir/c (-> #:nodeid uint64? #:flags oflags/c #:reply reply-open/c #:error reply-error/c void))
 (define (default-opendir #:nodeid nodeid #:flags flags #:reply reply #:error error)
-  (reply #:info #f #:flags (list)))
+  (reply #:info 0 #:flags (list)))
 
 (define reply-add/c (-> #:inode uint64? #:offset uint64? #:kind filetype? #:name path? boolean?))
 (define reply-done/c (use-once/c (-> void)))
@@ -312,7 +313,7 @@
 (define (default-removexattr #:nodeid nodeid #:name name #:reply reply #:error error)
   (error 'ENOSYS))
 
-(define access/c (-> #:nodeid uint64? #:mask perm/c #:reply reply-empty/c #:error reply-error/c void))
+(define access/c (-> #:nodeid uint64? #:mask perms/c #:reply reply-empty/c #:error reply-error/c void))
 (define (default-access #:nodeid nodeid #:mask mask #:reply reply #:error error)
   (error 'ENOSYS))
 
@@ -321,10 +322,10 @@
                                        #:inode uint64? #:rdev uint32?
                                        #:size uint64? #:blocks uint64? #:atime timespec?
                                        #:mtime timespec? #:ctime timespec? #:kind filetype?
-                                       #:perm perm/c #:nlink uint32? #:uid uint32? #:gid uint32?
+                                       #:perm perms/c #:nlink uint32? #:uid uint32? #:gid uint32?
                                        #:info uint64? #:flags open-out-flags/c
                                       void)))
-(define create/c (-> #:nodeid uint64? #:name path? #:mode perm/c #:umask perm/c #:flags oflags/c
+(define create/c (-> #:nodeid uint64? #:name path? #:mode perms/c #:umask perms/c #:flags oflags/c
                      #:reply reply-create/c #:error reply-error/c void))
 (define (default-create #:nodeid nodeid #:name name #:mode mode #:umask umask #:flags flags #:reply reply #:error error)
   (error 'ENOSYS))

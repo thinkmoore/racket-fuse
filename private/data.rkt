@@ -107,10 +107,14 @@
 (define (perm? m)
   (member m '(S_ISUID S_ISGID S_ISVTX S_IRUSR S_IWUSR S_IXUSR S_IRGRP S_IWGRP S_IXGRP S_IROTH S_IWOTH S_IXOTH)))
 
-(define perm/c (or/c perm? (listof perm?)))
+(define perms/c (or/c perm? (listof perm?)))
+
+(define perm-symbols '(S_ISUID S_ISGID S_ISVTX S_IRUSR S_IWUSR S_IXUSR S_IRGRP S_IWGRP S_IXGRP S_IROTH S_IWOTH S_IXOTH))
 
 (define (filetype? t)
   (member t '(S_IFSOCK S_IFLNK S_IFREG S_IFBLK S_IFDIR S_IFCHR S_IFIFO)))
+
+(define filetype-symbols '(S_IFSOCK S_IFLNK S_IFREG S_IFBLK S_IFDIR S_IFCHR S_IFIFO))
 
 (define (mode->perm mode)
   (cond
@@ -128,7 +132,9 @@
     [(filetype? mode) mode]
     [else #f]))
 
-(provide mode? perm? perm/c filetype? mode->perm mode->filetype)
+(provide mode? perm? perm-symbols perms/c
+         filetype? filetype-symbols
+         mode->perm mode->filetype)
 
 (define-bitmask oflag
   (O_RDONLY    = #o00000000
@@ -482,7 +488,7 @@
    [padding       _uint32]))
 
 (define-message fuse_link_in
-  ([oldnodeid _uint64]))
+  ([newparent _uint64]))
 
 (define-message fuse_setattr_in
   ([valid   _setattr-valids]
