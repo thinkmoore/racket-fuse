@@ -26,10 +26,12 @@ implement filesystem operations. Currently, racket-fuse depends on the libfuse C
 a FUSE filesystem. However, the communication protocol with the kernel and filesystem API does
 not reuse libfuse functionality, and this dependency will be removed in a future release.
 
+See @secref{example} for an example FUSE filesystem.
+
 @section{Creating a filesystem}
 
 To mount a userspace filesystem, call @racket[mount-filesystem] with a filesystem struct created
-by @racket[make-filesystem]. @racket[mount-filesystem] will not return until the filesystem is
+by @racket[make-filesystem]. The @racket[mount-filesystem] procedure will not return until the filesystem is
 umounted.
 
 To umount a userspace filesystem, invoke the program @code{fusermount}:
@@ -95,6 +97,9 @@ the parameters @racket[request-pid], @racket[request-uid], @racket[request-gid].
 
 @section{Operations}
 
+The following documentation was adapted from the reference low level FUSE API, available at
+@link["https://github.com/libfuse/libfuse/blob/master/include/fuse_lowlevel.h"]{https://github.com/libfuse/libfuse/blob/master/include/fuse_lowlevel.h}.
+
 @defproc[(init) (or/c #t errno?)]{
 Called before any other filesystem operation. Use this to initialize any state required by the filesystem.
 Return true on success or an errno symbol on error.
@@ -125,16 +130,16 @@ the lookup count is zero (because a sufficient number of @racket[forget] message
 If a file has been exported over NFS, the resources should be retained even longer. See the libfuse documentation
 for more details.
 
-@racket[forget] may not be invoked on all active indoes when the filesystem is unmounted.
+Operation @racket[forget] may not be invoked on all active indoes when the filesystem is unmounted.
 }
 
 @defproc[(getattr [#:nodeid nodeid uint64?]
-                  [#:info info uint64?]
+                  [#:info info (maybe/c uint64?)]
                   [#:reply reply reply-attr/c]
                   [#:error error reply-error/c]) void]{
-Get the file attributes of @racket[nodeid]. @racket[info] may in future contain
+Get the file attributes of @racket[nodeid]. The @racket[info] argument may in future contain
 information provided by the filesystem when opening the node, but currently
-is undefined.
+is always @racket[#f].
 }
 
 @defproc[(setattr [#:nodeid nodeid uint64?]
@@ -256,7 +261,14 @@ for important security information related to FUSE file access permissions).
 @defproc[(open [#:nodeid nodeid uint64?]
                [#:flags flags oflags/c]
                [#:reply reply reply-open/c]
-               [#:error error reply-error/c]) void]{}
+               [#:error error reply-error/c]) void]{
+Open the file at inode @racket[nodeid]. Argument @racket[flags] records the open flags
+passed to the originating system call, except for @racket['O_CREAT], @racket[O_EXCL],
+@racket[O_NOCTTY], and @racket[O_TRUNC], which are handled by FUSE by invoking
+@racket[create] instead of @racket[open]. When responding to an @racket[open] operation,
+the filesystem can specify a value that will be passed to the filesystem as the @racket[#:info]
+associated with an operation on the opened file.
+}
 
 @defproc[(create [#:nodeid nodeid uint64?]
                  [#:name name path-element?]
@@ -264,7 +276,13 @@ for important security information related to FUSE file access permissions).
                  [#:umask umask perms/c]
                  [#:flags flags oflags/c]
                  [#:reply reply reply-create/c]
-                 [#:error error reply-error/c]) void]{}
+                 [#:error error reply-error/c]) void]{
+Create and open a file in the directory @racket[nodeid] with name @racket[name].
+Argument @racket[flags] lists the flags passed to the originating @racket[open] system call.
+When responding to an @racket[create] operation, the filesystem can specify a value
+that will be passed to the filesystem as the @racket[#:info] associated with an
+operation on the created file.
+}
 
 @defproc[(read [#:nodeid nodeid uint64?]
                [#:info info uint64?]
@@ -272,7 +290,14 @@ for important security information related to FUSE file access permissions).
                [#:size size uint32?]
                [#:lockowner owner (or/c #f uint64?)]
                [#:reply reply reply-data/c]
-               [#:error error reply-error/c]) void]{}
+               [#:error error reply-error/c]) void]{
+Read @racket[size] bytes from the file at offset @racket[offset]. Read should respond
+with exactly the number of bytes requested (except on EOF or error), unless the
+@racket['FOPEN_DIRECT_IO] flag was included in the response when opening the file or
+the filesystem was mounted using the option @racket["direct_io"]. If direct IO is being used,
+the system call result for @racket[read] will reflect the number of bytes returned by
+the filesystem's response.
+}
 
 @defproc[(write [#:nodeid nodeid uint64?]
                 [#:info info uint64?]
@@ -280,13 +305,24 @@ for important security information related to FUSE file access permissions).
                 [#:data data bytes?]
                 [#:lockowner owner (or/c #f uint64?)]
                 [#:reply reply reply-write/c]
-                [#:error error reply-error/c]) void]{}
+                [#:error error reply-error/c]) void]{
+Unless the file was opened with the @racket['FOPEN_DIRECT_IO] flag or the filesystem
+was mounted with the option @racket["direct_io"], write the entire request @racket[data]
+to the file at offset @racket[offset]. If direct_io is being used, the operation may
+write fewer bytes and return the number of bytes written.
+}
 
 @defproc[(flush [#:nodeid nodeid uint64?]
                 [#:info info uint64?]
                 [#:lockowner owner uint64?]
                 [#:reply reply reply-empty/c]
-                [#:error error reply-error/c]) void]{}
+                [#:error error reply-error/c]) void]{
+Called whenever the @racket[close] system call is invoked on a file. May be invoked zero or
+multiple times per @racket[open] call depending on whether the file is closed and if the file
+descriptor of an open file has been duplicated.
+
+If the filesystem supports locking, it should remove all locks belonging to @racket[owner].
+}
 
 @defproc[(release [#:nodeid nodeid uint64?]
                   [#:info info uint64?]
@@ -294,17 +330,25 @@ for important security information related to FUSE file access permissions).
                   [#:flush flush boolean?]
                   [#:unlock unlock boolean?]
                   [#:reply reply reply-empty/c]
-                  [#:error error reply-error/c]) void]{}
+                  [#:error error reply-error/c]) void]{
+Invoked when there are no outstanding file descriptors or memory mappings for a file. Will be
+called exactly once per @racket[open] call.
+}
 
 @defproc[(fsyncdir [#:nodeid nodeid uint64?]
                    [#:info info uint64?]
                    [#:syncdataonly syncdata boolean?]
                    [#:reply reply reply-empty/c]
-                   [#:error error reply-error/c]) void]{}
+                   [#:error error reply-error/c]) void]{
+Synchronize the contents of directory @racket[nodeid]. If @racket[syncdata] is @racket[#t],
+synchronize only the contents of the directory, and not meta data.
+}
 
 @defproc[(statfs [#:nodeid nodeid uint64?]
                  [#:reply reply reply-statfs/c]
-                 [#:error error reply-error/c]) void]{}
+                 [#:error error reply-error/c]) void]{
+Return filesystem statistics for the filesystem containing @racket[nodeid].
+}
 
 @defproc[(setxattr [#:nodeid nodeid uint64?]
                    [#:name name bytes?]
@@ -312,21 +356,35 @@ for important security information related to FUSE file access permissions).
                    [#:op op xattr-op?]
                    [#:size size uint64?]
                    [#:reply reply reply-empty/c]
-                   [#:error error reply-error/c]) void]{}
+                   [#:error error reply-error/c]) void]{
+Set the extended attribute @racket[name] on file @racket[nodeid] to @racket[value].
+Argument @racket[op] is one of @racket['XATTR_DEFAULT], @racket['XATTR_CREATE], or @racket['XATTR_REPLACE].
+If @racket[op] is @racket['XATTR_DEFAULT], the extended attribute should be created if it does not exist
+or, if it exists the value should be replaced. If @racket[op] is @racket['XATTR_CREATE], the extended
+attribute should be created if it does not exist, otherwise the operation should fail. If @racket[op] is
+@racket['XATTR_REPLACE], the operation should fail if the extended attribute does not exists, otherwise
+it should replce the current value.
+}
 
 @defproc[(getxattr [#:nodeid nodeid uint64?]
                    [#:name name bytes?]
                    [#:reply reply reply-data/c]
-                   [#:error error reply-error/c]) void]{}
+                   [#:error error reply-error/c]) void]{
+Retreive the extended attribute with name @racket[name] for file @racket[nodeid].
+}
 
 @defproc[(listxattr [#:nodeid nodeid uint64?]
                     [#:reply reply reply-listxattr/c]
-                    [#:error error reply-error/c]) void]{}
+                    [#:error error reply-error/c]) void]{
+Retreive the names of all currently set extended attributes for @racket[nodeid].
+}
 
 @defproc[(removexattr [#:nodeid nodeid uint64?]
                       [#:name name bytes?]
                       [#:reply reply reply-empty/c]
-                      [#:error error reply-error/c]) void]{}
+                      [#:error error reply-error/c]) void]{
+Remove the extended attribute @racket[name] for file @racket[nodeid].
+}
 
 @defproc[(getlk [#:nodeid nodeid uint64?]
                 [#:info info uint64?]
@@ -336,7 +394,12 @@ for important security information related to FUSE file access permissions).
                 [#:type type lock-types/c]
                 [#:pid pid uint64?]
                 [#:reply reply reply-lock/c]
-                [#:error error reply-error/c]) void]{}
+                [#:error error reply-error/c]) void]{
+Test for the existence of a POSIX lock on @racket[nodeid]. According to libfuse,
+if @racket[getlk] and @racket[setlk] are not implemented, the kernel will implement
+file locking automatically, so these operations are only required in special cases
+(for example, to enable network filesystems to correctly implement distributed locking).
+}
 
 @defproc[(setlk [#:nodeid nodeid uint64?]
                 [#:info info uint64?]
@@ -346,13 +409,22 @@ for important security information related to FUSE file access permissions).
                 [#:type type lock-types/c]
                 [#:sleep sleep boolean?]
                 [#:reply reply reply-empty/c]
-                [#:error error reply-error/c]) void]{}
+                [#:error error reply-error/c]) void]{
+Acquire, modify, or release a POSIX lock on @racket[nodeid]. According to libfuse,
+if @racket[getlk] and @racket[setlk] are not implemented, the kernel will implement
+file locking automatically, so these operations are only required in special cases
+(for example, to enable network filesystems to correctly implement distributed locking).
+}
 
 @defproc[(bmap [#:nodeid nodeid uint64?]
                [#:blocksize blocksize uint32?]
                [#:index index uint64?]
                [#:reply reply reply-bmap/c]
-               [#:error error reply-error/c]) void]{}
+               [#:error error reply-error/c]) void]{
+Return the device block index for the block with index @racket[index] of file @racket[nodeid].
+Only useful for block-device backed filesystems using where the filesystem was mounted with
+the @racket["blkdev"] FUSE option.
+}
 
 @defproc[(fallocate [#:nodeid nodeid uint64?]
                     [#:info info uint64?]
@@ -360,31 +432,153 @@ for important security information related to FUSE file access permissions).
                     [#:offset offset uint64?]
                     [#:length length uint64?]
                     [#:reply reply reply-empty/c]
-                    [#:error error reply-error/c]) void]{}
+                    [#:error error reply-error/c]) void]{
+Allocate the requested space within file @racket[nodeid]. Argument @racket[mode] describes the particular
+fallocate operation requested. See @code{fallocate(2)} for more details.
+}
 
 @section{Responses}
 
-@defthing[reply-error/c contract?]{}
+@defthing[reply-error/c contract?
+          #:value (use-once/c (-> errno?
+                                  void))]{
+Respond to an operation with an error.
+}
 
-@defthing[reply-empty/c contract?]{}
+@defthing[reply-empty/c contract?
+          #:value (use-once/c (-> void))]{
+Indicates that an operation succeeded without providing any additional information.
+}
 
-@defthing[reply-entry/c contract?]{}
+@defthing[reply-entry/c contract?
+          #:value (use-once/c (-> #:generation uint64?
+                                  #:entry-valid timespec?
+                                  #:attr-valid timespec?
+                                  #:inode uint64?
+                                  #:rdev uint32?
+                                  #:size uint64?
+                                  #:blocks uint64?
+                                  #:atime timespec?
+                                  #:mtime timespec?
+                                  #:ctime timespec?
+                                  #:kind filetype?
+                                  #:perm perms/c
+                                  #:nlink uint32?
+                                  #:uid uint32?
+                                  #:gid uint32?
+                                  void))]{
+Respond to an operation with information about a filesystem entry.
+If the file system is exported as a network file system, @racket[#:generation] and @racket[#:inode] pairs
+must be unique over the lifetime of the filesystem. @racket[#:entry-valid] and @racket[#:attr-valid] indicate
+how long the kernel may cache the entry and attribute information for the inode. @racket[#:rdev] is the
+device number of the device containing the inode. @racket[#:atime], @racket[#:mtime], and @racket[#:ctime]
+are the last access, last modification, and creation times of the entry. @racket[#:kind] indicates the
+type of filesystem object represented by the entry. @racket[#:perm], @racket[#:uid], and @racket[#:gid] are
+the is UNIX file mode, owner, and group of the entry. @racket[#:nlink] reports the number of links to the entry
+in the filesystem.
+}
 
-@defthing[reply-attr/c contract?]{}
+@defthing[reply-attr/c contract?
+          #:value (use-once/c (-> #:attr-valid timespec?
+                                  #:inode uint64?
+                                  #:rdev uint32?
+                                  #:size uint64?
+                                  #:blocks uint64?
+                                  #:atime timespec?
+                                  #:mtime timespec?
+                                  #:ctime timespec?
+                                  #:kind filetype?
+                                  #:perm perms/c
+                                  #:nlink uint32?
+                                  #:uid uint32?
+                                  #:gid uint32?
+                                  void))]{
+Respond to an operation with a file's attributes.  @racket[#:attr-valid] indicates how long the kernel may cache the
+attribute information for the inode. Argument @racket[#:rdev] is the device number of the device containing the inode.
+Arguments @racket[#:atime], @racket[#:mtime], and @racket[#:ctime] are the last access, last modification, and creation times
+of the entry. @racket[#:kind] indicates the type of filesystem object represented by the entry. Arguments @racket[#:perm],
+@racket[#:uid], and @racket[#:gid] are the is UNIX file mode, owner, and group of the entry. Argument @racket[#:nlink]
+reports the number of links to the entry in the filesystem.
+}
 
-@defthing[reply-data/c contract?]{}
+@defthing[reply-data/c contract?
+          #:value (use-once/c (-> bytes?
+                                  void))]{
+Respond to an operation with a byte array.
+}
 
-@defthing[reply-open/c contract?]{}
+@defthing[reply-open/c contract?
+          #:value (use-once/c (-> #:info any/c
+                                  #:flags open-out-flags/c
+                                  void))]{
+Respond to an @racket[open] operation with a user defined value @racket[#:info] and flags configuring
+future operations on the file.
+}
 
-@defthing[reply-create/c contract?]{}
+@defthing[reply-create/c contract?
+          #:value (use-once/c (-> #:generation uint64?
+                                  #:entry-valid timespec?
+                                  #:attr-valid timespec?
+                                  #:inode uint64?
+                                  #:rdev uint32?
+                                  #:size uint64?
+                                  #:blocks uint64?
+                                  #:atime timespec?
+                                  #:mtime timespec?
+                                  #:ctime timespec?
+                                  #:kind filetype?
+                                  #:perm perms/c
+                                  #:nlink uint32?
+                                  #:uid uint32?
+                                  #:gid uint32?
+                                  #:info uint64?
+                                  #:flags open-out-flags/c
+                                  void))]{
+Respond to a @racket[create] operation with a user defined value @racket[#:info] and flags configuring
+future operations on the file. In addition, provide information about the newly created entry
+and its attributes (see @racket[reply-entry/c] for details).
+}
 
-@defthing[reply-write/c contract?]{}
+@defthing[reply-write/c contract?
+          #:value (use-once/c (-> #:written uint32?
+                                  void))]{
+Respond to a @racket[write] operation with the number of bytes written.
+}
 
-@defthing[reply-statfs/c contract?]{}
+@defthing[reply-statfs/c contract?
+          #:value (use-once/c (-> #:blocks uint64?
+                                  #:bfree uint64?
+                                  #:bavail uint64?
+                                  #:files uint64?
+                                  #:ffree uint64?
+                                  #:bsize uint32?
+                                  #:namlen uint32?
+                                  #:frsize uint32?
+                                  void))]{
+Respond to a @racket[statfs] operation with information about a filesystem.
+}
 
-@defthing[reply-listxattr/c contract?]{}
+@defthing[reply-listxattr/c contract?
+          #:value (use-once/c (-> (listof bytes?)
+                                  void))]{
+Respond to a @racket[listxattr] operation with the list of names of currently set extended attributes.
+}
 
-@defthing[reply-lock/c contract?]{}
+@defthing[reply-lock/c contract?
+          #:value (use-once/c (-> #:type lock-types/c
+                                  #:whence lock-whence?
+                                  #:start uint64?
+                                  #:length uint64?
+                                  #:pid uint64?
+                                  void))]{
+Respond to a lock operation with information about a POSIX lock.
+}
+
+@defthing[reply-bmap/c contract?
+          #:value (use-once/c (-> #:index uint64?
+                                  void))]{
+Respond to a @racket[bmap] operation with the device block index of a block within a file.
+}
 
 @section{Miscellaneous}
 
@@ -449,10 +643,13 @@ that can be represented by a 64-bit unsigned integer.
 @defbitmask[lock-type]
 @defenum[fallocate-mode]
 
-@section{Example}
+@section[#:tag "example"]{Example}
 
-The module @racketmod[fuse/examples/hello] implements an example FUSE
+The module @racketmodfont{fuse/examples/hello} implements an example FUSE
 filesystem. It is reproduced below for convenience. To run the filesystem,
-invoke 
+invoke @code{racket -l fuse/examples/hello /path/to/mount/point}.
+(@code{/path/to/mount/point} must exist as an empty directory). You can
+then explore the mounted filesystem at @code{/path/to/mount/point}. To unmount the
+filesystem, invoke @code{fusermount -u /path/to/mount/point}.
 
-@typeset-code[@file->string["../examples/hello.rkt"]]
+@filebox["fuse/examples/hello" @typeset-code[@file->string["../examples/hello.rkt"]]]
