@@ -652,4 +652,4 @@ invoke @code{racket -l fuse/examples/hello /path/to/mount/point}.
 then explore the mounted filesystem at @code{/path/to/mount/point}. To unmount the
 filesystem, invoke @code{fusermount -u /path/to/mount/point}.
 
-@filebox["fuse/examples/hello" @typeset-code[@file->string["../examples/hello.rkt"]]]
+@filebox["fuse/examples/hello" @typeset-code[@file->string["examples/hello.rkt"]]]
