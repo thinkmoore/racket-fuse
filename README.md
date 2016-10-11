@@ -9,3 +9,5 @@ implement filesystem operations.
 
 Currently, racket-fuse depends on the libfuse C library to mount a FUSE filesystem. However, the
 communication protocol with the kernel and filesystem API does not reuse libfuse functionality.
+
+Documentation is available at https://docs.racket-lang.org/fuse/index.html.
