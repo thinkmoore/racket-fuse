@@ -137,6 +137,7 @@
    (lambda (blame)
      (lambda (v neg)
        (let ([full-blame (blame-replace-negative blame neg)]
+             [lock (make-semaphore 1)]
              [used? #f])
          (unless (procedure? v)
            (raise-blame-error full-blame v
@@ -146,16 +147,22 @@
           (((contract-late-neg-projection ctc) blame) v neg)
           (make-keyword-procedure
            (lambda (kwds kw-args . args)
+             (semaphore-wait lock)
              (when used?
+               (semaphore-post lock)
                (raise-blame-error (blame-swap full-blame) v
                                   "use-once procedure invoked multiple times: ~a" v))
              (set! used? #t)
+             (semaphore-post lock)
              (apply values kw-args args))
            (lambda args
+             (semaphore-wait lock)
              (when used?
+               (semaphore-post lock)
                (raise-blame-error (blame-swap full-blame) v
                                   "use-once procedure invoked multiple times: ~a" v))
              (set! used? #t)
+             (semaphore-post lock)
              (apply values args)))))))))
 
 (define (maybe/c ctc) (or/c ctc #f))
